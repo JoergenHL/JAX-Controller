@@ -9,7 +9,7 @@ class PID_Controller(IController):
         self.sum_error = 0
         self.params = params
     
-    def reset_state(self):
+    def reset(self):
         # Reset error tracking
         self.error = 0
         self.sum_error = 0

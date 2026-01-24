@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 class IController(ABC):
 
     @abstractmethod
-    def init_params(self):
+    def reset(self):
         pass
     
     @abstractmethod
