@@ -9,14 +9,14 @@ class Bathtub_Plant(IPlant):
         self.H0 = config["H0"]
         self.A = config["A"]
         self.C = config["C"]
-        self.g = config["g"]
+        self.G = config["G"]
 
     def init_state(self):
         return self.H0
     
     # Outflow velocity from height 
     def get_velocity(self, H): 
-        return jnp.sqrt(2 * self.g * H)
+        return jnp.sqrt(2 * self.G * H)
         
     # Outflow rate
     def get_flow_loss(self, velocity): 

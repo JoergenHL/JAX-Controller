@@ -20,17 +20,13 @@ class PID_Controller(IController):
     def get_params(self):
         return self.params
 
-    def step(self, error):
+    def step(self, params, error, sum_error, old_error):
         # Compute PID output: proportional + derivative + integral terms
-        kp = self.params["kp"]
-        kd = self.params["kd"]
-        ki = self.params["ki"]
-        old_error = self.error
+        kp = params["kp"]
+        kd = params["kd"]
+        ki = params["ki"]
         dE = error - old_error
 
-        U = kp*error + kd*dE + ki*self.sum_error
-
-        self.sum_error += error
-        self.error = error
+        U = kp*error + kd*dE + ki*sum_error
         
         return U
