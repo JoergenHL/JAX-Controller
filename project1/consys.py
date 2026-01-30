@@ -93,17 +93,17 @@ class Consys():
         T = plant_config["T"]
         D = plant_config["D"]
 
-        gradfunc = jax.grad(run_one_epoch, argnums=0)
+        # gradfunc = jax.grad(run_one_epoch, argnums=0)
 
         run_one_epoch_jit = jax.jit(run_one_epoch, static_argnums=(1, 3))
-
+        gradfunc_jit =jax.grad(run_one_epoch_jit, argnums=0)
         
 
         for k in range(self.epochs):
             noise_arr, key = self.generate_noise(D, key)
 
             loss = run_one_epoch_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
-            grads = gradfunc(params, controller, noise_arr=noise_arr, plant=plant, target=T)
+            grads = gradfunc_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
 
             params = jax.tree.map(
                  lambda p, g: p - self.lr * g, 
@@ -111,17 +111,11 @@ class Consys():
                  grads
             )
 
+            if k % 10 == 0:
+                print(f"Loss: {loss}")
 
-        if k % 200 == 0:
-            print(f"Loss: {loss}")
-            print(f"D: {params}")
             
         
-
-
-
-
-
 consys_config = config.CONSYS_CONFIG
 system = Consys(consys_config)
 
