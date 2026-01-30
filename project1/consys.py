@@ -4,17 +4,17 @@ import numpy as np
 import config
 
 from plant.bathtub_plant import Bathtub_Plant
+from plant.cournot_plant import Cournot_Plant
 from controller.pid_controller import PID_Controller
 
 PLANT_REGISTRY = {
-    "bathtub": Bathtub_Plant
+    "bathtub": Bathtub_Plant,
+    "cournot": Cournot_Plant
 }
 
 CONTROLLER_REGISTRY = {
     "pid": PID_Controller
 }
-
-
 
 def run_one_epoch(params, controller, noise_arr, plant, target):
         # controller.reset()    currently meaningless
@@ -49,8 +49,6 @@ def run_one_epoch(params, controller, noise_arr, plant, target):
 
         return loss
 
-
-
 class Consys():
 
     def __init__(self, consys_config):
@@ -58,6 +56,7 @@ class Consys():
         self.timesteps = consys_config["timesteps"]
         self.seed = consys_config["seed"]
         self.lr = consys_config["lr"]
+        self.D = consys_config["D"]
         return
 
     
@@ -76,8 +75,6 @@ class Consys():
 
 
     def run_system(self):
-        key = jax.random.PRNGKey(self.seed)
-
         plant_type = config.PLANT_TYPE
         plant_config = config.PLANT_CONFIG[plant_type]
         Plant_Class = PLANT_REGISTRY[plant_type]
@@ -90,14 +87,14 @@ class Consys():
 
         params = controller.get_params()
 
-        T = plant_config["T"]
-        D = plant_config["D"]
-
         # gradfunc = jax.grad(run_one_epoch, argnums=0)
 
         run_one_epoch_jit = jax.jit(run_one_epoch, static_argnums=(1, 3))
         gradfunc_jit =jax.grad(run_one_epoch_jit, argnums=0)
         
+        T = plant_config["T"]
+        D = self.D
+        key = jax.random.PRNGKey(self.seed)
 
         for k in range(self.epochs):
             noise_arr, key = self.generate_noise(D, key)
@@ -111,7 +108,7 @@ class Consys():
                  grads
             )
 
-            if k % 10 == 0:
+            if k % 30 == 0:
                 print(f"Loss: {loss}")
 
             

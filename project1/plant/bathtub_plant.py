@@ -1,6 +1,6 @@
 
 import jax.numpy as jnp
-from plant.iplant import IPlant
+from .iplant import IPlant
 
 # Bathtub model with water level dynamics
 class Bathtub_Plant(IPlant):
