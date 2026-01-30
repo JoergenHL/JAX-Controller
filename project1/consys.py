@@ -72,7 +72,7 @@ class Consys():
         )
         D_vals = jnp.array(D)
         noise_arr = D_vals[idx]
-        return noise_arr
+        return noise_arr, key
 
 
     def run_system(self):
@@ -97,8 +97,10 @@ class Consys():
 
         run_one_epoch_jit = jax.jit(run_one_epoch, static_argnums=(1, 3))
 
+        
+
         for k in range(self.epochs):
-            noise_arr = self.generate_noise(D, key)
+            noise_arr, key = self.generate_noise(D, key)
 
             loss = run_one_epoch_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
             grads = gradfunc(params, controller, noise_arr=noise_arr, plant=plant, target=T)
@@ -109,9 +111,12 @@ class Consys():
                  grads
             )
 
-            if k % 200 == 0:
-                print(f"Loss: {loss}")
-                print(f"D: {params}")
+
+        if k % 200 == 0:
+            print(f"Loss: {loss}")
+            print(f"D: {params}")
+            
+        
 
 
 
