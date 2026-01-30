@@ -14,29 +14,42 @@ CONTROLLER_REGISTRY = {
     "pid": PID_Controller
 }
 
-def run_one_epoch(params, controller, noise_arr, plant, target, timesteps):
-        controller.reset()
+
+
+def run_one_epoch(params, controller, noise_arr, plant, target):
+        # controller.reset()    currently meaningless
         state = plant.init_state()
 
-        errors = jnp.zeros(timesteps)
+        # errors = jnp.zeros(timesteps)
         iE = jnp.array(0.0)
         old_E = jnp.array(0.0)
 
-        for t in range(timesteps):
+        init_carry = (state, iE, old_E)
+        input = noise_arr
+
+        def run_one_timestep(carry, noise_t):
+            state, iE, old_E = carry
+
             Y = plant.output(state)
             E = target - Y
-            iE += E
+            iE = iE + E
             U = controller.step(params, E, iE, old_E)
             old_E = E
+            new_state = plant.step(state, U, noise_t)
+            
+            return (new_state, iE, old_E), E**2
+        
+        (final_carry, error_history) = jax.lax.scan(
+            run_one_timestep,
+            init_carry, 
+            input
+        )
 
-            noise = noise_arr[t]
-            state = plant.step(state, U, noise)
-
-            errors = errors.at[t].set(E**2)
-
-        loss = jnp.sqrt(jnp.mean(errors))
+        loss = jnp.sqrt(jnp.mean(error_history))
 
         return loss
+
+
 
 class Consys():
 
@@ -49,6 +62,7 @@ class Consys():
 
     
     def generate_noise(self, D, key):
+        # This is where timesteps are used, later noise_arr define the timesteps in lax.scan
         key, subkey = jax.random.split(key)
         idx = jax.random.randint(
             subkey,
@@ -78,27 +92,16 @@ class Consys():
 
         T = plant_config["T"]
         D = plant_config["D"]
-        timesteps = self.timesteps
 
         gradfunc = jax.grad(run_one_epoch, argnums=0)
+
+        run_one_epoch_jit = jax.jit(run_one_epoch, static_argnums=(1, 3))
 
         for k in range(self.epochs):
             noise_arr = self.generate_noise(D, key)
 
-            loss = run_one_epoch(params, controller, noise_arr=noise_arr, plant=plant, target=T, timesteps=timesteps)
-            """ state = plant.init_state()
-            controller.reset()
-
-            for t in range(self.timesteps):
-                Y = plant.output(state)
-                E = T - Y
-                U = controller.step(E)
-                noise = noise_arr[t]
-                state = plant.step(state, U, noise)
-
-                sum_E += E """
-            
-            grads = gradfunc(params, controller, noise_arr=noise_arr, plant=plant, target=T, timesteps=timesteps)
+            loss = run_one_epoch_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
+            grads = gradfunc(params, controller, noise_arr=noise_arr, plant=plant, target=T)
 
             params = jax.tree.map(
                  lambda p, g: p - self.lr * g, 
@@ -106,9 +109,9 @@ class Consys():
                  grads
             )
 
-            if k % 10 == 0:
+            if k % 200 == 0:
                 print(f"Loss: {loss}")
-                print(f"Params: {params}")
+                print(f"D: {params}")
 
 
 
