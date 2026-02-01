@@ -1,11 +1,12 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 import config
+import matplotlib.pyplot as plt
 
 from plant.bathtub_plant import Bathtub_Plant
 from plant.cournot_plant import Cournot_Plant
 from controller.pid_controller import PID_Controller
+from controller.nn_controller import NN_Controller
 
 PLANT_REGISTRY = {
     "bathtub": Bathtub_Plant,
@@ -13,11 +14,12 @@ PLANT_REGISTRY = {
 }
 
 CONTROLLER_REGISTRY = {
-    "pid": PID_Controller
+    "pid": PID_Controller,
+    "nn": NN_Controller
 }
 
 def run_one_epoch(params, controller, noise_arr, plant, target):
-        # controller.reset()    currently meaningless
+        # controller.reset()    |   currently meaningless
         state = plant.init_state()
 
         # errors = jnp.zeros(timesteps)
@@ -33,7 +35,7 @@ def run_one_epoch(params, controller, noise_arr, plant, target):
             Y = plant.output(state)
             E = target - Y
             iE = iE + E
-            U = controller.step(params, E, iE, old_E)
+            U = controller.step(params, (E, iE, old_E))
             old_E = E
             new_state = plant.step(state, U, noise_t)
             
@@ -75,6 +77,7 @@ class Consys():
 
 
     def run_system(self):
+        key = jax.random.PRNGKey(self.seed)
         plant_type = config.PLANT_TYPE
         plant_config = config.PLANT_CONFIG[plant_type]
         Plant_Class = PLANT_REGISTRY[plant_type]
@@ -83,7 +86,7 @@ class Consys():
         controller_type = config.CONTROLLER_TYPE
         controller_config = config.CONTROLLER_CONFIG[controller_type]
         Controller_Class = CONTROLLER_REGISTRY[controller_type]
-        controller = Controller_Class(controller_config)
+        controller = Controller_Class(controller_config, key)
 
         params = controller.get_params()
 
@@ -94,12 +97,12 @@ class Consys():
         
         T = plant_config["T"]
         D = self.D
-        key = jax.random.PRNGKey(self.seed)
-
+        
         for k in range(self.epochs):
             noise_arr, key = self.generate_noise(D, key)
 
             loss = run_one_epoch_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
+            #loss = run_one_epoch(params, controller, noise_arr=noise_arr, plant=plant, target=T)
             grads = gradfunc_jit(params, controller, noise_arr=noise_arr, plant=plant, target=T)
 
             params = jax.tree.map(
@@ -108,8 +111,8 @@ class Consys():
                  grads
             )
 
-            if k % 30 == 0:
-                print(f"Loss: {loss}")
+            if k % 20 == 0:
+                print(f"Loss for epoch {k}: {loss}")
 
             
         

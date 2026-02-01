@@ -35,7 +35,7 @@ class Bathtub_Plant(IPlant):
         Q = self.get_flow_loss(V)
         dB = self.get_dB(U, D, Q)
         dH = self.get_dH(dB)
-        new_H = H + dH
+        new_H = jnp.clip(H + dH, 0)
         return new_H
     
     def output(self, state):

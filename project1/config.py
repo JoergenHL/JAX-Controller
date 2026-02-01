@@ -2,7 +2,7 @@
 # "bathtube", "cournot"
 PLANT_TYPE = "cournot"
 
-# "pid"
+# "pid", "nn"
 CONTROLLER_TYPE = "pid"
 
 PLANT_CONFIG = {
@@ -28,12 +28,18 @@ CONTROLLER_CONFIG = {
         "kp": 0.1,
         "kd": 0.1,
         "ki": 0.1
+    },
+
+    "nn" : {
+        "layers": [3, 16, 16, 16, 1],
+        "activation_func": "relu", # sigmoid, tanh, relu
+        "param_range": (-0.01, 0.01),
     }
 }
 
 CONSYS_CONFIG = {
-    "epochs": 300,
-    "timesteps": 100,
+    "epochs": 100,
+    "timesteps": 30,
     "seed": 42,
     "lr": 0.01,
     "D": [-0.01, -0.005, 0, 0.005, 0.01]
