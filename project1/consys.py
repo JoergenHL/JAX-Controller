@@ -97,6 +97,14 @@ class Consys():
         
         T = plant_config["T"]
         D = self.D
+
+        losses = []
+        pid = False
+        if controller_type == "pid":
+            pid = True
+            kp = []
+            kd = []
+            ki = []
         
         for k in range(self.epochs):
             noise_arr, key = self.generate_noise(D, key)
@@ -110,14 +118,37 @@ class Consys():
                  params, 
                  grads
             )
+            
+            if pid:
+                kp.append(params["kp"])
+                kd.append(params["kd"])
+                ki.append(params["ki"])
+            losses.append(loss)
 
             if k % 20 == 0:
                 print(f"Loss for epoch {k}: {loss}")
 
-            
+        plt.figure(figsize=(10,5))
+        plt.suptitle(f"Learning for {controller_type.upper()}-controller")
+        plt.subplot(1, 2, 1)
+        plt.plot(losses)
+        plt.xlabel("Epoch")
+        plt.ylabel("MSE")
+        plt.title("Learning Progression")
+        
+        if pid:
+            plt.subplot(1, 2, 2)
+            plt.plot(kp, label="kp")
+            plt.plot(kd, label="kd")
+            plt.plot(ki, label="ki")
+            plt.xlabel("Epoch")
+            plt.ylabel("Y")
+            plt.legend()
+            plt.title("Control Parameters")
+
+        plt.show()
         
 consys_config = config.CONSYS_CONFIG
 system = Consys(consys_config)
 
 system.run_system()
-
