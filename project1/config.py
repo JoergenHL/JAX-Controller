@@ -1,9 +1,9 @@
 
-# "bathtube", "cournot"
-PLANT_TYPE = "cournot"
+# "bathtube", "cournot", "lif"
+PLANT_TYPE = "lif"
 
 # "pid", "nn"
-CONTROLLER_TYPE = "pid"
+CONTROLLER_TYPE = "nn"
 
 PLANT_CONFIG = {
     "bathtub": {
@@ -19,6 +19,15 @@ PLANT_CONFIG = {
         "cm": 0.1,
         "T": 3.,
         "init_vals": 0.1
+    },
+
+    "lif": {
+        "spike_thr": 0.5,
+        "V0": -0.4,
+        "alfa": 0.9,
+        "gamma": 0.7,
+        "T": 0.9
+
     }
 
 }
@@ -38,8 +47,8 @@ CONTROLLER_CONFIG = {
 }
 
 CONSYS_CONFIG = {
-    "epochs": 100,
-    "timesteps": 30,
+    "epochs": 1000,
+    "timesteps": 10,
     "seed": 42,
     "lr": 0.01,
     "D": [-0.01, -0.005, 0, 0.005, 0.01]

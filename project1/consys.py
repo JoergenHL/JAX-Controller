@@ -5,12 +5,14 @@ import matplotlib.pyplot as plt
 
 from plant.bathtub_plant import Bathtub_Plant
 from plant.cournot_plant import Cournot_Plant
+from plant.lif_plant import LIF_Plant
 from controller.pid_controller import PID_Controller
 from controller.nn_controller import NN_Controller
 
 PLANT_REGISTRY = {
     "bathtub": Bathtub_Plant,
-    "cournot": Cournot_Plant
+    "cournot": Cournot_Plant,
+    "lif": LIF_Plant
 }
 
 CONTROLLER_REGISTRY = {
@@ -19,10 +21,8 @@ CONTROLLER_REGISTRY = {
 }
 
 def run_one_epoch(params, controller, noise_arr, plant, target):
-        # controller.reset()    |   currently meaningless
         state = plant.init_state()
 
-        # errors = jnp.zeros(timesteps)
         iE = jnp.array(0.0)
         old_E = jnp.array(0.0)
 
@@ -125,7 +125,7 @@ class Consys():
                 ki.append(params["ki"])
             losses.append(loss)
 
-            if k % 20 == 0:
+            if k % 100 == 0:
                 print(f"Loss for epoch {k}: {loss}")
 
         plt.figure(figsize=(10,5))
