@@ -125,8 +125,8 @@ class Consys():
                 ki.append(params["ki"])
             losses.append(loss)
 
-            if k % 100 == 0:
-                print(f"Loss for epoch {k}: {loss}")
+            """ if k % 100 == 0:
+                print(f"Loss for epoch {k}: {loss}") """
 
         plt.figure(figsize=(10,5))
         plt.suptitle(f"Learning for {controller_type.upper()}-controller")
@@ -147,6 +147,9 @@ class Consys():
             plt.title("Control Parameters")
 
         plt.show()
+        fig = plt.gcf()
+        plt.close(fig)
+        return fig
         
 consys_config = config.CONSYS_CONFIG
 system = Consys(consys_config)
