@@ -40,4 +40,4 @@ class LIF_Plant(IPlant):
     
     def external_input(self, D):
         # Scale disturbance to input signal
-        return D * 40
+        return D 
