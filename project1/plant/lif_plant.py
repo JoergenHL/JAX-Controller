@@ -1,5 +1,6 @@
 from .iplant import IPlant
 import jax.numpy as jnp
+import jax.nn as jnn
 
 # Leaky Integrate-and-Fire neuron model
 class LIF_Plant(IPlant):
@@ -12,14 +13,14 @@ class LIF_Plant(IPlant):
 
     def init_state(self):
         # Initialize voltage and firing rate
-        return jnp.array([self.V0, jnp.array(0.0)])
+        return jnp.array([self.V0, 0.0])
     
     def step(self, state, U, D):
         # Update neuron state: voltage, spikes, and firing rate
         V, r = state
         external_input = self.external_input(D)
         V_star = self.update_V(V, U, external_input)
-        spike = jnp.where(V_star >= self.spike_thr, 1.0, 0.0)
+        spike = jnn.sigmoid((V_star - self.spike_thr) * 10) 
         new_V = jnp.where(spike == 1.0, self.V0, V_star)
         new_r = self.update_r(r, spike)
         return jnp.array([new_V, new_r])
