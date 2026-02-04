@@ -1,4 +1,3 @@
-import jax.numpy as jnp
 from .icontroller import IController
 
 # PID controller with proportional, derivative, and integral terms
