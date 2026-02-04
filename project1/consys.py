@@ -63,7 +63,7 @@ def run_one_epoch(params, controller, noise_arr, plant, target):
         )
 
         # Calculate MSE loss
-        loss = jnp.sqrt(jnp.mean(error_history))
+        loss = jnp.mean(error_history)
 
         return loss
 
