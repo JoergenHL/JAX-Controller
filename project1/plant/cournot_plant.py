@@ -1,5 +1,6 @@
 from .iplant import IPlant
 import jax.numpy as jnp
+import jax.nn as jnn
 
 # Cournot duopoly: two firms competing on production quantity
 class Cournot_Plant(IPlant):
@@ -14,10 +15,10 @@ class Cournot_Plant(IPlant):
         return jnp.array([self.init_vals, self.init_vals])
 
     def step(self, state, U, D):
-        # Update quantities with control inputs, clip to [0, 1]
+        # Update quantities with control inputs
         q1, q2 = state
-        new_q1 = jnp.clip(self.update_q1(U, q1), 0, 1)
-        new_q2 = jnp.clip(self.update_q2(D, q2), 0, 1)
+        new_q1 = jnn.sigmoid(self.update_q1(U, q1))
+        new_q2 = jnn.sigmoid(self.update_q2(D, q2))
         return jnp.array([new_q1, new_q2])
 
     def output(self, state):
