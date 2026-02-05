@@ -1,6 +1,6 @@
 
 # "bathtube", "cournot", "lif"
-PLANT_TYPE = "lif"
+PLANT_TYPE = "bathtub"
 
 # "pid", "nn"
 CONTROLLER_TYPE = "nn"
@@ -22,11 +22,11 @@ PLANT_CONFIG = {
     },
 
     "lif": {
-        "spike_thr": 0.5,
-        "V0": -0.4,
-        "alfa": 0.9,
-        "gamma": 0.7,
-        "T": 0.9
+        "spike_thr": -0.05,
+        "V0": -0.07,
+        "alfa": 0.7,
+        "gamma": 0.2,
+        "T": 0.5
 
     }
 
@@ -42,14 +42,14 @@ CONTROLLER_CONFIG = {
     "nn" : {
         "layers": [3, 16, 16, 16, 1],
         "activation_func": "relu", # sigmoid, tanh, relu
-        "param_range": (-0.01, 0.01),
+        "param_range": (0.0, 0.1),
     }
 }
 
 CONSYS_CONFIG = {
     "epochs": 1000,
-    "timesteps": 10,
+    "timesteps": 100,
     "seed": 42,
-    "lr": 0.01,
+    "lr": 0.001,
     "D": [-0.01, -0.005, 0, 0.005, 0.01]
 }
