@@ -5,40 +5,36 @@ import jax.numpy as jnp
 
 class Linear(nnx.Module):
     def __init__(self, din: int, dout: int, *, rngs: nnx.Rngs):
-        self.w = nnx.Param(rngs.param.uniform((din, dout)))
+        # Initialize with symmetric normal distribution (standard approach)
+        # This avoids bias toward positive/negative values
+        self.w = nnx.Param(rngs.param.normal((din, dout)) * 0.01)
         self.b = nnx.Param(jnp.zeros((dout, )))
-        self.din, self.dout = din, dout
 
     def __call__(self, x: jax.Array):
-        return x @ self.w + self.b  
-    
+        return x @ self.w + self.b
+
+
 class MLP(nnx.Module):
-    def __init__(self, din: int, dout: int, hidden_dims: tuple, *, rngs: nnx.Rngs):
+    """Simple MLP: takes layer dimensions and builds network.
+    
+    Example: MLP([8, 16, 16, 4], rngs) creates 8→16→16→4 net
+    with ReLU between layers, no activation on output.
+    """
+    
+    def __init__(self, dims: list[int], *, rngs: nnx.Rngs):
         """
         Args:
-            din: Input dimension
-            dout: Output dimension
-            hidden_dims: Tuple of hidden layer dimensions, e.g., (16, 16, 16)
-            rngs: Random number generators for initialization
+            dims: List of dimensions [input, hidden1, hidden2, ..., output]
+            rngs: Random number generators
         """
-        # Store architecture info
-        self.din = din
-        self.dout = dout
-        self.hidden_dims = hidden_dims if isinstance(hidden_dims, tuple) else (hidden_dims,)
-        
-        # Build all layers using nnx.Dict for NNX compatibility
-        self.layers = nnx.Dict()
-        dims = [self.din] + list(self.hidden_dims) + [self.dout]
-        
-        for i in range(len(dims) - 1):
-            self.layers[f"layer_{i}"] = Linear(dims[i], dims[i+1], rngs=rngs)
+        self.layers = nnx.List(
+            [Linear(dims[i], dims[i+1], rngs=rngs) for i in range(len(dims) - 1)]
+        )
 
     def __call__(self, x: jax.Array):
-        # Pass through all layers, applying activation after each except the last
-        num_layers = len(self.layers)
-        for i in range(num_layers):
-            layer = self.layers[f"layer_{i}"]
+        for i, layer in enumerate(self.layers):
             x = layer(x)
-            if i < num_layers - 1:  # Don't apply activation to output layer
-                x = nnx.gelu(x)
+            if i < len(self.layers) - 1:  # No activation on last layer
+                x = nnx.relu(x)
         return x
+
