@@ -1,23 +1,27 @@
 from .node import Node
 import math
 import random
+import jax.nn
+
 
 class MCTS():
 
-    def __init__(self, gsm, num_actions, nn_pred=None):
+    def __init__(self, gsm, num_actions, nn_pred=None, use_puct=False):
         """Initialize MCTS.
         
         Args:
             gsm: Game state manager
             num_actions: Number of legal actions
-            nn_pred: Optional function(state) -> (value, policy_dict)
-                    Returns value estimate and policy probabilities over actions
+            nn_pred: Optional function(state) -> (value, policy_logits)
+                    Returns value estimate and policy logits over actions
+            use_puct: If True, use PUCT (policy-guided UCB) instead of UCB
         """
         self.gsm = gsm
         self.nn_pred = nn_pred
         self.num_actions = num_actions
         self.num_simulations = 10
         self.c = 2
+        self.use_puct = use_puct
 
     def search(self, state, debug=False):
         """Run MCTS from a state and return best action with policy and value.
@@ -53,9 +57,9 @@ class MCTS():
         while not self.gsm.is_terminal(node.state) and node.is_expanded():
             node = self._select(node)
         
-        # 2. Expansion
+        # 2. Expansion — expand the leaf in-place; keep node pointing at the leaf
         if not self.gsm.is_terminal(node.state):
-            node = self._expand(node)
+            self._expand(node)
 
         # 3. Evaluation: get value estimate from NN or random rollout
         value = self._evaluate(node)
@@ -76,17 +80,31 @@ class MCTS():
 
 
     def _select(self, node):
-        """UCB1 action selection."""
+        """Action selection: PUCT (policy-guided UCB).
+        
+        Uses policy logits to bias exploration toward promising actions,
+        while still using Q-values to guide the search.
+        """
+        # Pick randomly among unvisited actions to avoid dict-order bias.
+        unvisited = [a for a, s in node.action_stats.items() if s["N"] == 0]
+        if unvisited:
+            return node.children[random.choice(unvisited)]
+
         best_score = -math.inf
         best_action = None
 
-        for action in node.action_stats:
-            stats = node.action_stats[action]
-            if stats["N"] == 0:
-                return node.children[action]
+        for action, stats in node.action_stats.items():
+            Q = stats["Q"]
             
-            Q = stats["Q"] 
-            U = self.c * math.sqrt(math.log(node.visits) / stats["N"])
+            if "policy_prior" in stats:
+                # PUCT: Q(s,a) + c * P(a|s) * sqrt(N(s)) / (1 + N(s,a))
+                p = stats["policy_prior"]
+                N = stats["N"]
+                U = self.c * p * math.sqrt(node.visits) / (1 + N)
+            else:
+                # Fallback UCB if policy not available
+                U = self.c * math.sqrt(math.log(node.visits) / stats["N"])
+            
             score = Q + U
 
             if score > best_score:
@@ -96,33 +114,69 @@ class MCTS():
         return node.children[best_action]
 
     def _expand(self, node):
-        """Expand node by adding ALL legal action children."""
+        """Expand node and extract policy priors to guide future selection.
+        
+        Get policy logits from network to bias action exploration (PUCT).
+        Value will be backpropagated from leaf evaluation.
+        """
         state = node.state
         actions = self.gsm.legal_actions(state)
         
+        # Get policy priors from NN to guide exploration
+        policy_priors = None
+        if self.nn_pred is not None:
+            try:
+                _, policy_logits = self.nn_pred(state)
+                # Convert logits to probabilities via softmax
+                policy_probs = jax.nn.softmax(policy_logits)
+                policy_priors = [float(policy_probs[i]) for i in range(len(policy_probs))]
+            except Exception:
+                policy_priors = None
+        
         # Initialize all legal actions with children and stats
-        for action in actions:
+        for action_idx, action in enumerate(actions):
             new_state = self.gsm.next_state(state, action)
             child = Node(new_state, parent=node, parent_action=action)
             node.add_child(action, child)
+            
+            # Store policy prior to bias selection (used in PUCT)
+            if policy_priors is not None and action_idx < len(policy_priors):
+                node.action_stats[action]["policy_prior"] = policy_priors[action_idx]
         
-        # Return one of the children for evaluation
-        return node.children[random.choice(actions)]
+        # Expansion complete — caller evaluates the leaf itself, not a child
 
     def _evaluate(self, node):
         """Evaluate a node using NN value or random rollout.
         
         If NN available: use predicted value (fast)
         If NN unavailable: use random rollout (slow but model-free)
+        
+        Returns:
+            value: Scalar value estimate
         """
         state = node.state
-        
+
+        # Terminal states have a known, exact value from the game itself.
+        # The network has never been trained on terminal states and would return
+        # a meaningless ~0; we must use the actual reward here so MCTS
+        # backpropagates real signal (+1 / -1) rather than noise.
+        if self.gsm.is_terminal(state):
+            if node.parent is not None and node.parent_action is not None:
+                return self.gsm.reward(node.parent.state, node.parent_action, state)
+            return 0.0
+
         if self.nn_pred is not None:
-            # Use NN to estimate value
-            value, _ = self.nn_pred(state)
-            return value
+            try:
+                # NN returns (value, policy_logits)
+                result = self.nn_pred(state)
+                if isinstance(result, tuple):
+                    value, _ = result
+                else:
+                    value = result
+                return float(value)
+            except Exception:
+                return self._random_rollout(state)
         else:
-            # Random rollout
             return self._random_rollout(state)
 
     def _random_rollout(self, state):
@@ -162,16 +216,10 @@ class MCTS():
         return best_action
     
     def _get_policy(self, node):
-        """Get visit count distribution over actions."""
-        total_visits = sum(stats["N"] for stats in node.action_stats.values())
-        if total_visits == 0:
-            return {}
-        
+        """Get visit count distribution over actions (for policy training target)."""
         policy = {}
-        
         for action, stats in node.action_stats.items():
-            policy[action] = stats["N"] / total_visits
-        
+            policy[action] = stats["N"]
         return policy
 
     def _get_value(self, node):

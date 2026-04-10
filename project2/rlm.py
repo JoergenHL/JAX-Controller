@@ -1,245 +1,186 @@
-"""
-Reinforcement Learning Manager (RLM)
-
-Handles high-level training operations:
-- Run episodes with MCTS
-- Collect data into episodes
-- Train networks
-- Manage training loop
-"""
-
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
+"""Reinforcement Learning Manager."""
 
 import jax.numpy as jnp
-
-from game.LineWorld import LineWorld
 from mcts.mcts import MCTS
-from nn.NNManager import NNManager
 from buffer import EpisodeBuffer
+from game.ASM import ASM
+import config
 
 
 class ReinforcementLearningManager:
-    """Manages the overall training loop and episodes."""
-    
-    def __init__(self, game_state_manager, nn_manager, num_actions=2, trunk_name="trunk", value_name="value"):
-        """Initialize RLM.
-        
-        Args:
-            game_state_manager: GSM instance (e.g., LineWorld)
-            nn_manager: NNM instance with networks
-            num_actions: Number of possible actions
-            trunk_name: Name of trunk network in NNM
-            value_name: Name of value head network in NNM
-        """
+    """Orchestrates the AlphaZero self-play training loop.
+
+    Responsibilities:
+    - Run game episodes using MCTS to choose actions
+    - Store episode data in the EpisodeBuffer
+    - Trigger network training via NNManager
+    - Evaluate win rate
+    """
+
+    def __init__(self, game_state_manager, nn_manager):
         self.gsm = game_state_manager
         self.nnm = nn_manager
-        self.num_actions = num_actions
-        
-        # Get networks (allow custom names)
-        try:
-            self.trunk = nn_manager.get_net(trunk_name)
-            self.value_head = nn_manager.get_net(value_name)
-        except ValueError:
-            # Fall back to first two networks if specific names don't exist
-            available = list(nn_manager.models.keys())
-            if len(available) >= 2:
-                self.trunk = nn_manager.get_net(available[0])
-                self.value_head = nn_manager.get_net(available[1])
-            else:
-                raise ValueError(f"Need at least 2 networks, found {len(available)}")
-        
-        # Episode buffer
         self.episode_buffer = EpisodeBuffer()
-        
-        # MCTS with NN
-        self.nn_pred = self._make_nn_predictor()
-        self.mcts = MCTS(self.gsm, num_actions=num_actions, nn_pred=self.nn_pred)
-    
-    def _make_nn_predictor(self):
-        """Create a function that predicts value using the NN."""
-        def predict(state):
-            state_batch = jnp.array([[state]], dtype=jnp.float32)
-            trunk_out = self.trunk(state_batch)
-            value = float(self.value_head(trunk_out)[0, 0])
-            return value, {}
-        return predict
-    
-    def run_episode(self):
-        """Run one episode of the game using MCTS for action selection.
-        
+        self.asm = ASM()
+
+        # Stage 3: two networks instead of one combined network.
+        # NNr maps real states → abstract states.
+        # NNp maps abstract states → (value, policy).
+        # _predict chains them: real_state → ASM.map_abstract_state → ASM.predict.
+        # MCTS still operates on real game states (GSM drives transitions);
+        # only the leaf evaluation uses the abstract-state pipeline.
+        self.mcts = MCTS(self.gsm, num_actions=2,
+                         nn_pred=self._predict, use_puct=True)
+        self.mcts.num_simulations = config.mcts["num_simulations"]
+        self.mcts.c = config.mcts["c"]
+
+    # ── Network interface ──────────────────────────────────────────────────────
+
+    def _predict(self, state):
+        """Run the NNr → NNp pipeline on a single real game state.
+
+        Stage 3 change: instead of one network directly mapping real_state → output,
+        we now go real_state → NNr → abstract_state → NNp → (value, policy_logits).
+        NNp never sees the raw game state — only the abstract representation.
+
         Returns:
-            Episode dict with states, actions, rewards, policies, values
+            value: scalar estimate of the state's worth
+            policy_logits: raw (pre-softmax) action preferences
         """
-        states = []
-        actions_taken = []
-        rewards = []
-        policies = []
-        values = []
-        
+        abstract = self.asm.map_abstract_state(state, self.nnm.get_net("nnr"))
+        return self.asm.predict(abstract, self.nnm.get_net("nnp"))
+
+    # ── Episode collection ─────────────────────────────────────────────────────
+
+    def collect_episode(self):
+        """Play one game using MCTS and return the trajectory.
+
+        At each step:
+          1. Run MCTS simulations from the current state
+          2. Pick the most-visited action
+          3. Record the state, chosen action, reward, and MCTS visit distribution
+
+        After the game ends, compute per-step returns (G_t = sum of future rewards).
+        For LineWorld, the reward is sparse (only ±1 at the terminal step), so
+        every state in a winning episode gets return +1 and every state in a
+        losing episode gets return -1.
+        """
+        states, actions, rewards, policies = [], [], [], []
+
         state = self.gsm.initial_state()
-        total_reward = 0
-        
         while not self.gsm.is_terminal(state):
             states.append(state)
-            
-            # MCTS action selection
-            action, policy, value = self.mcts.search(state)
-            actions_taken.append(action)
-            policies.append(policy)
-            values.append(value)
-            
-            # Take action
+
+            action, policy, _ = self.mcts.search(state)
+            actions.append(action)
+            policies.append(policy)    # {action: visit_count} from MCTS
+
             next_state = self.gsm.next_state(state, action)
             reward = self.gsm.reward(state, action, next_state)
             rewards.append(reward)
-            total_reward += reward
-            
+
             state = next_state
-        
-        # Terminal state reached
-        final_value = 1.0 if state == self.gsm.max_position else -1.0
-        
-        episode = {
-            'states': states,
-            'actions': actions_taken,
-            'rewards': rewards,
-            'policies': policies,
-            'values': values,
-            'final_value': final_value,
-            'total_reward': total_reward
-        }
-        
-        return episode
-    
-    def collect_episodes(self, num_episodes, use_mcts_nn=True):
-        """Collect multiple episodes and store in buffer.
-        
-        Args:
-            num_episodes: Number of episodes to collect
-            use_mcts_nn: If True, use NN in MCTS; if False, use pure MCTS
-        
+
+        # G_t = r_t + r_{t+1} + … + r_T  (gamma = 1, no discounting)
+        returns, G = [], 0
+        for r in reversed(rewards):
+            G += r
+            returns.insert(0, G)
+
+        return {'states': states, 'actions': actions,
+                'rewards': rewards, 'policies': policies, 'returns': returns}
+
+    # ── Training loop ──────────────────────────────────────────────────────────
+
+    def train(self, num_iterations=None, episodes_per_iter=None, epochs=None):
+        """Self-play training loop.
+
+        Each iteration:
+          1. Collect episodes using the current network
+          2. Train the network on all collected data
+          3. Repeat — the improved network generates better data next iteration
+
         Returns:
-            List of episodes
+            dict with 'losses' (per-epoch history) and 'iter_boundaries'
+            (epoch indices where each new iteration starts), for plotting.
         """
-        # Optionally disable NN for pure MCTS collection
-        if not use_mcts_nn:
-            self.mcts.nn_pred = None
-        
-        episodes = []
-        for ep in range(num_episodes):
-            episode = self.run_episode()
-            episodes.append(episode)
-            self.episode_buffer.add_episode(
-                episode['states'],
-                episode['actions'],
-                episode['rewards'],
-                episode['policies'],
-                episode['values']
-            )
-            
-            if (ep + 1) % max(1, num_episodes // 5) == 0:
-                print(f"  Episode {ep+1}/{num_episodes}: "
-                      f"reward={episode['total_reward']:+.1f}")
-        
-        # Re-enable NN for training
-        if not use_mcts_nn:
-            self.mcts.nn_pred = self.nn_pred
-        
-        return episodes
-    
-    def train_networks(self, num_epochs=20, learning_rate=0.01):
-        """Train the networks using collected episodes.
-        
-        This delegates to NNManager.bptt_train() which handles BPTT.
-        
-        Args:
-            num_epochs: Number of training epochs
-            learning_rate: Learning rate for gradient descent
+        num_iterations   = num_iterations   or config.training["num_iterations"]
+        episodes_per_iter = episodes_per_iter or config.training["episodes_per_iter"]
+        epochs           = epochs           or config.training["epochs_per_iter"]
+
+        print(f"\n{'='*50}")
+        print("AlphaZero self-play training")
+        print(f"{'='*50}\n")
+
+        all_losses = []       # (total, value, policy) per epoch, all iterations
+        iter_boundaries = []  # epoch index at which each iteration begins
+
+        for it in range(num_iterations):
+            print(f"[Iteration {it+1}/{num_iterations}]")
+
+            print(f"  Collecting {episodes_per_iter} episodes...")
+            for _ in range(episodes_per_iter):
+                episode = self.collect_episode()
+                self.episode_buffer.add_episode(
+                    episode['states'],
+                    episode['actions'],
+                    episode['rewards'],
+                    episode['policies'],
+                    episode['returns'],
+                )
+
+            print(f"  Training for {epochs} epochs...")
+            iter_boundaries.append(len(all_losses))
+            iter_losses = self._train_networks(epochs)
+            if iter_losses:
+                all_losses.extend(iter_losses)
+
+            print(f"  Buffer: {self.episode_buffer.size()} episodes\n")
+
+        return {'losses': all_losses, 'iter_boundaries': iter_boundaries}
+
+    def _train_networks(self, epochs):
+        """Extract training targets from the buffer and run one training pass.
+
+        Value target:  the actual episode return G_t (what happened)
+        Policy target: MCTS visit distribution π (what the search preferred)
+
+        The network learns to imitate what MCTS does, and MCTS improves as
+        the network's estimates become more accurate — the bootstrap cycle.
         """
-        # Get training data from buffer
-        training_data = self.episode_buffer.get_training_data()
-        
-        # Delegate to NNManager to handle BPTT
-        self.nnm.bptt_train(
-            trunk_name="trunk",
-            value_name="value",
-            training_data=training_data,
-            num_epochs=num_epochs,
-            learning_rate=learning_rate
+        training_data, policy_targets = self.episode_buffer.get_training_data_with_policies()
+        if not training_data:
+            return None
+
+        states        = [s for s, _ in training_data]
+        value_targets = [v for _, v in training_data]
+
+        # Map visit-count dicts → probability arrays in canonical action order
+        action_order = self.gsm.legal_actions(self.gsm.initial_state())
+        policy_arrays = [
+            [pt.get(a, 0.0) for a in action_order]
+            for pt in policy_targets
+        ]
+
+        return self.nnm.train_repr_pred(
+            states, value_targets, policy_arrays,
+            num_epochs=epochs,
+            learning_rate=config.nn["learning_rate"],
         )
-    
-    def training_loop(self, num_iterations=5, episodes_per_iter=10, training_epochs=20):
-        """Main training loop.
-        
-        Args:
-            num_iterations: Number of training iterations
-            episodes_per_iter: Episodes to collect per iteration
-            training_epochs: Epochs for network training per iteration
-        """
-        print(f"\n{'='*60}")
-        print(f"REINFORCEMENT LEARNING LOOP")
-        print(f"{'='*60}")
-        
-        for iteration in range(num_iterations):
-            print(f"\n[Iteration {iteration+1}/{num_iterations}]")
-            
-            # Step 1: Collect episodes
-            print(f"  Collecting {episodes_per_iter} episodes with MCTS+NN...")
-            self.collect_episodes(episodes_per_iter, use_mcts_nn=True)
-            
-            # Step 2: Train networks
-            print(f"  Training networks...")
-            self.train_networks(num_epochs=training_epochs, learning_rate=0.01)
-            
-            # Step 3: Report
-            print(f"  Buffer: {self.episode_buffer.size()} episodes total")
-    
+
+    # ── Evaluation ─────────────────────────────────────────────────────────────
+
     def evaluate(self, num_games=20):
-        """Evaluate current MCTS+NN against pure MCTS.
-        
-        Args:
-            num_games: Number of games to play
-        
-        Returns:
-            Dict with results
-        """
-        print(f"\nEvaluating ({num_games} games)...")
-        
-        # Pure MCTS test
-        mcts_pure = MCTS(self.gsm, num_actions=self.num_actions, nn_pred=None)
-        wins_pure = 0
-        for i in range(num_games):
-            state = self.gsm.initial_state()
-            while not self.gsm.is_terminal(state):
-                action, _, _ = mcts_pure.search(state)
-                state = self.gsm.next_state(state, action)
-            if state == self.gsm.max_position:
-                wins_pure += 1
-        
-        # MCTS+NN test
-        wins_nn = 0
-        for i in range(num_games):
+        """Play num_games using the current MCTS+network policy and report win rate."""
+        print(f"\n  Evaluating ({num_games} games)...")
+        wins = 0
+        for _ in range(num_games):
             state = self.gsm.initial_state()
             while not self.gsm.is_terminal(state):
                 action, _, _ = self.mcts.search(state)
                 state = self.gsm.next_state(state, action)
             if state == self.gsm.max_position:
-                wins_nn += 1
-        
-        result = {
-            'pure_mcts': wins_pure,
-            'mcts_nn': wins_nn,
-            'total': num_games,
-            'pure_mcts_pct': 100 * wins_pure / num_games,
-            'mcts_nn_pct': 100 * wins_nn / num_games
-        }
-        
-        print(f"  Pure MCTS: {wins_pure}/{num_games} ({result['pure_mcts_pct']:.0f}%)")
-        print(f"  MCTS+NN:   {wins_nn}/{num_games} ({result['mcts_nn_pct']:.0f}%)")
-        
-        return result
-
-
+                wins += 1
+        pct = 100 * wins / num_games
+        print(f"  Win rate: {wins}/{num_games} ({pct:.0f}%)")
+        return pct
