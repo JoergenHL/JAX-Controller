@@ -38,57 +38,6 @@ class EpisodeBuffer:
         }
         self.episodes.append(episode)
     
-    def get_training_data(self):
-        """Return all episodes as training data.
-        
-        Used by NNM for training.
-        Returns:
-            List of (state, target_return) tuples
-        """
-        training_data = []
-        
-        for episode in self.episodes:
-            states = episode['states']
-            final_value = episode['values'][-1] if episode['values'] else 0.0
-            
-            for state in states:
-                training_data.append((float(state), float(final_value)))
-        
-        return training_data
-    
-    def get_training_data_with_policies(self):
-        """Return training data WITH policy targets (for Stage 2B+).
-        
-        Returns:
-            Tuple of (training_data, policy_targets) where:
-            - training_data: [(state, target_return), ...]
-            - policy_targets: [{action: normalized_prob, ...}, ...]
-        """
-        training_data = []
-        policy_targets = []
-        
-        for episode in self.episodes:
-            states   = episode['states']
-            values   = episode['values']   # one return per step
-            policies = episode['policies']
-
-            for state, value, policy_dict in zip(states, values, policies):
-                training_data.append((float(state), float(value)))
-                
-                # Normalize visit counts to probabilities
-                if policy_dict:
-                    total_visits = sum(policy_dict.values())
-                    normalized_policy = {
-                        action: float(count) / total_visits 
-                        for action, count in policy_dict.items()
-                    }
-                else:
-                    normalized_policy = {}
-                
-                policy_targets.append(normalized_policy)
-        
-        return training_data, policy_targets
-    
     def get_episode(self, idx):
         """Return a full episode dict by index.
 

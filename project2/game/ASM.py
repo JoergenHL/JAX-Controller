@@ -8,7 +8,7 @@ class ASM:
     that knows how to move between the two worlds:
 
         real state  ──NNr──>  abstract state σ  ──NNp──>  (value, policy)
-                                                  ──NNd──>  (next σ, reward)  [Stage 4]
+                                                  ──NNd──>  (next σ, reward)
 
     This class holds no network weights itself — it receives the networks as
     arguments so the NNManager remains the single owner of all parameters.
@@ -43,10 +43,36 @@ class ASM:
         policy_logits = output[1:]
         return value, policy_logits
 
-    def next_abstract_state(self, abstract_state, action, nn_d):
-        """Predict next abstract state and reward via NNd.
+    def next_abstract_state(self, abstract_state, action, nn_d, action_space):
+        """Predict next abstract state and immediate reward via NNd.
 
-        Stage 4 — NNd not yet implemented.
-        When implemented: (σ, action) → (next_σ, predicted_reward)
+        This is the learned world model: given a state in abstract space and
+        an action, predict where the world goes next (still in abstract space)
+        and what reward will be received. NNd never sees real game states.
+
+        Input to NNd: [abstract_state (abstract_dim,) ++ action_onehot (num_actions,)]
+        Output of NNd: [next_abstract_state (abstract_dim,), predicted_reward (1,)]
+
+        Args:
+            abstract_state: jnp array of shape [1, abstract_dim]
+            action:         action string (e.g. "LEFT" or "RIGHT")
+            nn_d:           the dynamics network (NNd)
+            action_space:   ordered list of all legal actions (e.g. ["LEFT", "RIGHT"])
+
+        Returns:
+            next_sigma:     jnp array of shape [1, abstract_dim]
+            reward_pred:    scalar float — predicted immediate reward
         """
-        return None
+        abstract_dim = abstract_state.shape[1]
+        num_actions  = len(action_space)
+
+        action_idx   = action_space.index(action)
+        action_onehot = jnp.zeros(num_actions).at[action_idx].set(1.0)
+
+        # Concatenate [σ, onehot(a)] → NNd input of shape [1, abstract_dim + num_actions]
+        nnd_input = jnp.concatenate([abstract_state[0], action_onehot])[None, :]
+        nnd_output = nn_d(nnd_input)[0]   # shape: [abstract_dim + 1]
+
+        next_sigma  = nnd_output[:abstract_dim][None, :]   # [1, abstract_dim]
+        reward_pred = float(nnd_output[-1])
+        return next_sigma, reward_pred

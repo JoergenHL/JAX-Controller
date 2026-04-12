@@ -1,7 +1,4 @@
-from .IGameStateManager import IGameStateManager
-
-
-class LineWorld(IGameStateManager):
+class LineWorld:
 
     def __init__(self):
         self.max_position = 5

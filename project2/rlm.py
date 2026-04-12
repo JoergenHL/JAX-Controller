@@ -1,5 +1,6 @@
 """Reinforcement Learning Manager."""
 
+import random
 import jax.numpy as jnp
 from mcts.mcts import MCTS
 from buffer import EpisodeBuffer
@@ -23,25 +24,30 @@ class ReinforcementLearningManager:
         self.episode_buffer = EpisodeBuffer()
         self.asm = ASM()
 
-        # Stage 3: two networks instead of one combined network.
-        # NNr maps real states → abstract states.
-        # NNp maps abstract states → (value, policy).
-        # _predict chains them: real_state → ASM.map_abstract_state → ASM.predict.
-        # MCTS still operates on real game states (GSM drives transitions);
-        # only the leaf evaluation uses the abstract-state pipeline.
-        self.mcts = MCTS(self.gsm, num_actions=2,
-                         nn_pred=self._predict, use_puct=True)
+        # Stage 4B: u-MCTS operates entirely in abstract space.
+        # NNr encodes the real state to σ once at the root.
+        # NNd drives all node expansions (no real game calls during search).
+        # NNp evaluates leaves and provides policy priors for PUCT.
+        self.mcts = MCTS(
+            nn_r         = nn_manager.get_net("nnr"),
+            nn_d         = nn_manager.get_net("nnd"),
+            nn_p         = nn_manager.get_net("nnp"),
+            action_space = self.gsm.legal_actions(self.gsm.initial_state()),
+            use_puct     = True,
+            dir_alpha    = config.mcts["dir_alpha"],
+            dir_epsilon  = config.mcts["dir_epsilon"],
+        )
         self.mcts.num_simulations = config.mcts["num_simulations"]
-        self.mcts.c = config.mcts["c"]
+        self.mcts.c     = config.mcts["c"]
+        self.mcts.d_max = config.mcts["d_max"]
 
     # ── Network interface ──────────────────────────────────────────────────────
 
     def _predict(self, state):
         """Run the NNr → NNp pipeline on a single real game state.
 
-        Stage 3 change: instead of one network directly mapping real_state → output,
-        we now go real_state → NNr → abstract_state → NNp → (value, policy_logits).
-        NNp never sees the raw game state — only the abstract representation.
+        Used for evaluation and show_predictions() outside of MCTS.
+        (Inside u-MCTS, ASM is called directly on abstract states.)
 
         Returns:
             value: scalar estimate of the state's worth
@@ -71,7 +77,16 @@ class ReinforcementLearningManager:
         while not self.gsm.is_terminal(state):
             states.append(state)
 
-            action, policy, _ = self.mcts.search(state)
+            _, policy, _ = self.mcts.search(state)
+
+            # Sample action from MCTS visit distribution (AlphaZero training convention).
+            # Argmax would always pick LEFT when values are uniform (equal visit counts),
+            # preventing exploration. Sampling ensures diverse self-play data from the start.
+            total = sum(policy.values()) or 1
+            action = random.choices(list(policy.keys()),
+                                    weights=[policy[a] / total for a in policy],
+                                    k=1)[0]
+
             actions.append(action)
             policies.append(policy)    # {action: visit_count} from MCTS
 
@@ -140,30 +155,59 @@ class ReinforcementLearningManager:
         return {'losses': all_losses, 'iter_boundaries': iter_boundaries}
 
     def _train_networks(self, epochs):
-        """Extract training targets from the buffer and run one training pass.
+        """Build BPTT minibatches from the episode buffer and train all three networks.
 
-        Value target:  the actual episode return G_t (what happened)
-        Policy target: MCTS visit distribution π (what the search preferred)
+        Stage 4A: replaces the flat train_repr_pred call with full BPTT roll-ahead.
 
-        The network learns to imitate what MCTS does, and MCTS improves as
-        the network's estimates become more accurate — the bootstrap cycle.
+        For each episode in the buffer, we extract every valid window of
+        roll_ahead consecutive steps. Each window provides:
+          - Starting real state s_k
+          - The next roll_ahead actions (what the agent actually did)
+          - Value targets: episode returns G_{k}…G_{k+w-1}
+          - Policy targets: MCTS visit distributions π_k…π_{k+w-1}
+          - Reward targets: actual immediate rewards r_{k+1}…r_{k+w}
+
+        NNManager.train_bptt then unrolls NNr → NNd^w → NNp through this window
+        and backpropagates through the entire unrolled graph.
         """
-        training_data, policy_targets = self.episode_buffer.get_training_data_with_policies()
-        if not training_data:
+        if self.episode_buffer.size() == 0:
             return None
 
-        states        = [s for s, _ in training_data]
-        value_targets = [v for _, v in training_data]
+        action_order  = self.gsm.legal_actions(self.gsm.initial_state())
+        action_to_idx = {a: i for i, a in enumerate(action_order)}
+        roll_ahead    = config.training["roll_ahead"]
 
-        # Map visit-count dicts → probability arrays in canonical action order
-        action_order = self.gsm.legal_actions(self.gsm.initial_state())
-        policy_arrays = [
-            [pt.get(a, 0.0) for a in action_order]
-            for pt in policy_targets
-        ]
+        minibatches = []
+        for ep_idx in range(self.episode_buffer.size()):
+            ep      = self.episode_buffer.get_episode(ep_idx)
+            states  = ep['states']
+            actions = ep['actions']
+            returns = ep['values']    # per-step returns G_t
+            policies = ep['policies']
+            rewards  = ep['rewards']
 
-        return self.nnm.train_repr_pred(
-            states, value_targets, policy_arrays,
+            # Each valid starting step k needs roll_ahead more steps after it
+            for k in range(len(states) - roll_ahead + 1):
+                p_arrays = []
+                for pt in policies[k : k + roll_ahead]:
+                    total = sum(pt.values()) or 1
+                    p_arrays.append([pt.get(a, 0.0) / total for a in action_order])
+
+                minibatches.append({
+                    'state':          float(states[k]),
+                    'action_indices': [action_to_idx[a] for a in actions[k : k + roll_ahead]],
+                    'value_targets':  [float(v) for v in returns[k : k + roll_ahead]],
+                    'policy_targets': p_arrays,
+                    'reward_targets': [float(r) for r in rewards[k : k + roll_ahead]],
+                })
+
+        if not minibatches:
+            return None
+
+        return self.nnm.train_bptt(
+            minibatches,
+            abstract_dim=config.nn["abstract_dim"],
+            num_actions=config.nn["num_actions"],
             num_epochs=epochs,
             learning_rate=config.nn["learning_rate"],
         )
@@ -175,8 +219,9 @@ class ReinforcementLearningManager:
         print(f"\n  Evaluating ({num_games} games)...")
         wins = 0
         for _ in range(num_games):
+            i = 0
             state = self.gsm.initial_state()
-            while not self.gsm.is_terminal(state):
+            while not self.gsm.is_terminal(state) and i < 20:
                 action, _, _ = self.mcts.search(state)
                 state = self.gsm.next_state(state, action)
             if state == self.gsm.max_position:
