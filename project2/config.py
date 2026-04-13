@@ -24,9 +24,9 @@ nn = {
     # nnr/nnp/nnd_hidden: hidden layer widths — change to adjust depth and width.
     #   e.g. "nnr_hidden": [128, 64]  gives a two-hidden-layer NNr.
     "abstract_dim": 16,
-    "nnr_hidden":   [128, 128, 128],
-    "nnp_hidden":   [128, 128, 128],
-    "nnd_hidden":   [128, 128, 128],
+    "nnr_hidden":   [128, 256, 128],
+    "nnp_hidden":   [128, 256, 128],
+    "nnd_hidden":   [128, 256, 128],    
     "learning_rate": 0.001,
 }
 
@@ -41,11 +41,16 @@ viz = {
     # eval_every: evaluate the model every N training iterations.
     # Each checkpoint plays eval_games MCTS games — set eval_every=0 to skip
     # entirely and avoid slowing down training.
-    "eval_every":  2,       # 0 = off; N = evaluate after every N-th iteration
-    "eval_games":  5,       # games per checkpoint (small = fast)
+    "eval_every":  0,       # 0 = off; N = evaluate after every N-th iteration
+    "eval_games":  2,       # games per checkpoint (small = fast)
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
     "replay_after_training": True,
     "replay_max_steps":      50,
+
+    # compare_baseline: run a random agent after training and overlay its scores
+    # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.
+    "compare_baseline": True,
+    "baseline_games":   20,     # more games = more stable estimate
 }

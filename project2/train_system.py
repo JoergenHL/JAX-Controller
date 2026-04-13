@@ -5,6 +5,7 @@ import config
 from game.TwentyFortyEight import TwentyFortyEight
 from nn.NNManager import NNManager
 from rlm import ReinforcementLearningManager
+from baseline import RandomBaseline
 from run_logger import RunLogger
 from visualize import plot_training, replay_game
 
@@ -52,11 +53,22 @@ logger = RunLogger(game, config, network_dims)
 logger.log_run(result)
 json_path = logger.save()
 
+baseline_scores = None
+if config.viz.get("compare_baseline", False):
+    baseline_agent = RandomBaseline(game)
+    b_pct, b_avg, b_tiles = baseline_agent.evaluate(
+        num_games=config.viz.get("baseline_games", 20)
+    )
+    logger.log_baseline(b_pct, b_avg, b_tiles)
+    json_path = logger.save()   # overwrite with baseline data included
+    baseline_scores = (b_pct, b_avg, b_tiles)
+
 plot_training(
     result,
     game_name=game.__class__.__name__,
     network_dims=network_dims,
     save_path=json_path.replace(".json", ".png"),
+    baseline=baseline_scores,
 )
 
 # ── Game replay ────────────────────────────────────────────────────────────────

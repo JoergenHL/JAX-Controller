@@ -12,7 +12,7 @@ import numpy as np
 # ── Loss + eval plot ───────────────────────────────────────────────────────────
 
 def plot_training(result: dict, game_name: str, network_dims: dict,
-                  save_path: str = None):
+                  save_path: str = None, baseline=None):
     """Save a 3-panel training summary figure.
 
     Panels:
@@ -21,7 +21,9 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
       2. Eval scores over training iterations.
          Each checkpoint shows all per-game scores as dots, with lines for
          the average and the best game, so variance is visible.
-         Skipped if no eval data (eval_every=0).
+         If baseline is provided, a dashed gray reference line + shaded band
+         shows the random-agent score range for comparison.
+         Skipped if no eval data (eval_every=0) AND no baseline provided.
       3. Per-iteration loss breakdown: stacked bars of value / policy / reward
          at the final epoch of each iteration — shows which component dominates.
 
@@ -30,13 +32,15 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
         game_name:    string label for the title (e.g. "TwentyFortyEight")
         network_dims: dict with 'nnr', 'nnp', 'nnd' dim lists for subtitle
         save_path:    if provided, save to this path; otherwise show interactively
+        baseline:     optional (pct, avg_tile, max_tiles) from RandomBaseline.evaluate()
     """
     losses          = result["losses"]
     boundaries      = result["iter_boundaries"]
     eval_scores     = result.get("eval_scores", [])
 
-    has_eval = len(eval_scores) > 0
-    n_panels = 3 if has_eval else 2
+    has_eval     = len(eval_scores) > 0
+    has_baseline = baseline is not None
+    n_panels = 3 if (has_eval or has_baseline) else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
     if n_panels == 1:
         axes = [axes]
@@ -69,29 +73,45 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
                 transform=ax.transAxes)
         ax.set_title("Training loss")
 
-    # ── Panel 2: Eval scores ──────────────────────────────────────────────────
-    if has_eval:
+    # ── Panel 2: Eval scores (+ optional baseline) ────────────────────────────
+    if has_eval or has_baseline:
         ax = axes[1]
-        iters   = [e[0] for e in eval_scores]
-        avgs    = [e[2] for e in eval_scores]
-        bests   = [max(e[3]) for e in eval_scores]
-        all_pts = [(e[0], t) for e in eval_scores for t in e[3]]
 
-        # Individual game scores as light dots
-        xs, ys = zip(*all_pts) if all_pts else ([], [])
-        ax.scatter(xs, ys, color="tab:blue", alpha=0.4, s=20, label="per-game")
+        if has_eval:
+            iters   = [e[0] for e in eval_scores]
+            avgs    = [e[2] for e in eval_scores]
+            bests   = [max(e[3]) for e in eval_scores]
+            all_pts = [(e[0], t) for e in eval_scores for t in e[3]]
 
-        # Average and best lines
-        ax.plot(iters, avgs,  color="tab:blue",   linewidth=1.5, marker="o",
-                markersize=4, label="avg")
-        ax.plot(iters, bests, color="tab:orange", linewidth=1.5, marker="s",
-                markersize=4, label="best", linestyle="--")
+            xs, ys = zip(*all_pts) if all_pts else ([], [])
+            ax.scatter(xs, ys, color="tab:blue", alpha=0.4, s=20, label="per-game")
+            ax.plot(iters, avgs,  color="tab:blue",   linewidth=1.5, marker="o",
+                    markersize=4, label="avg")
+            ax.plot(iters, bests, color="tab:orange", linewidth=1.5, marker="s",
+                    markersize=4, label="best", linestyle="--")
+            ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        else:
+            # No in-training eval — show a placeholder note
+            ax.text(0.5, 0.6, "No in-training eval\n(set eval_every > 0)",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=9, color="gray")
+
+        # Baseline reference: dashed line at avg, shaded band from min to max
+        if has_baseline:
+            _, b_avg, b_tiles = baseline
+            b_min, b_max = min(b_tiles), max(b_tiles)
+            # Use x-axis span of the eval data, or a default span of [0.5, 1.5]
+            x_lo = 0.5
+            x_hi = max(iters) + 0.5 if has_eval else 1.5
+            ax.axhline(b_avg, color="gray", linestyle="--", linewidth=1.2,
+                       label=f"random avg ({b_avg:.0f})")
+            ax.fill_between([x_lo, x_hi], b_min, b_max,
+                            color="gray", alpha=0.12, label="random range")
 
         ax.set_xlabel("Iteration")
         ax.set_ylabel("Max tile")
         ax.set_title("Eval: max tile per game")
         ax.legend(fontsize=8)
-        ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
     # ── Panel 3: Loss breakdown per iteration ─────────────────────────────────
     ax = axes[-1]

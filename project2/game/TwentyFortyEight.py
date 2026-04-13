@@ -13,9 +13,9 @@ class TwentyFortyEight:
     Log2 encoding gives bounded, uniformly-spaced values as NNr input.
     Merging two tiles of value v produces v+1 in log2 space.
 
-    Reward: value of each merged tile in the single LARGEST merge this move.
-      Two 16s → 32: reward = 16 (= 2^(5-1)).
-      Two 16s + two 4s same move: reward = 16 (only the largest merge counts).
+    Reward: non-zero only when the current maximum tile advances.
+      If the board max is 16 and two 16s merge → 32: reward = 16.
+      If the board max is 16 and two 8s merge → 16: reward = 0 (max unchanged).
       No merge: reward = 0.
 
     Terminal: no valid move in any of the 4 directions.
@@ -62,14 +62,20 @@ class TwentyFortyEight:
         return self._spawn_tile(new_state)
 
     def reward(self, state, action, next_state):
-        """Reward = value of each tile in the largest merge this move.
+        """Reward = current max tile value, but ONLY if the max tile advances.
 
-        Only the single largest merge per move is rewarded.
-        Reward for merging two tiles of log2-value v: 2^v.
-        (e.g. two 16s (v=4) → 32: reward = 2^4 = 16)
+        The max tile advances when two tiles equal to the current maximum merge.
+        Example: board max = 16 (log2=4), two 16s merge → 32 (log2=5): reward = 16.
+        Example: board max = 16, two 8s merge → 16: reward = 0 (max unchanged).
+
+        This incentivises the agent to build up and merge its largest tile
+        rather than farming small merges.
         """
         _, max_merged_log2 = self._apply_move(state, action)
         if max_merged_log2 == 0:
+            return 0.0
+        current_max = float(np.max(state))
+        if max_merged_log2 != current_max + 1:
             return 0.0
         return float(2 ** (max_merged_log2 - 1))
 
