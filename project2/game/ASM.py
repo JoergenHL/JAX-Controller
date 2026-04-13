@@ -24,7 +24,9 @@ class ASM:
         Returns:
             abstract_state: jnp array of shape [1, abstract_dim]
         """
-        state_array = jnp.array([[state]], dtype=jnp.float32)
+        # jnp.atleast_2d handles both scalar states (→ shape [1,1]) and
+        # flat-array states like 2048's 16-element board (→ shape [1, state_dim]).
+        state_array = jnp.atleast_2d(jnp.array(state, dtype=jnp.float32))
         return nn_r(state_array)   # shape: [1, abstract_dim]
 
     def predict(self, abstract_state, nn_p):

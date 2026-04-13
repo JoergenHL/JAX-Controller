@@ -65,7 +65,8 @@ class MCTS:
             policy: Dict {action: visit_count} — training target for NNp
             value:  Root value estimate
         """
-        sigma = _net_fwd(self.nn_r, jnp.array([[real_state]], dtype=jnp.float32))
+        # atleast_2d: scalar state → [1,1]; flat array (e.g. 16-cell board) → [1, state_dim]
+        sigma = _net_fwd(self.nn_r, jnp.atleast_2d(jnp.array(real_state, dtype=jnp.float32)))
         root  = Node(sigma)
 
         for _ in range(self.num_simulations):
@@ -74,22 +75,51 @@ class MCTS:
         return self._best_action(root), self._get_policy(root), self._get_value(root)
 
     def _run_simulation(self, root):
-        """One simulation: selection → expansion → evaluation → backprop."""
-        node, depth = root, 0
+        """One simulation: tree policy → expand → random child → rollout → backprop.
 
-        # Selection: follow tree policy until an unexpanded node or max depth
-        while node.is_expanded() and depth < self.d_max:
+        This matches the u-MCTS algorithm exactly:
+          1. Tree policy (PUCT) navigates from root to the first unexpanded node L.
+          2. Expand L: NNd generates all child states, adds them to the tree.
+          3. Randomly pick one child Nc — NOT guided by PUCT.
+          4. Rollout: from Nc apply NNd d_max times, sampling actions from NNp.
+          5. Evaluate the rollout endpoint with NNp → vm.
+          6. Backpropagate vm from Nc up to root.
+
+        Why step 3 must be random and not PUCT:
+        A freshly expanded node has Q=0 for all children. PUCT then degenerates to
+        pure policy-prior selection, which reflects whatever NNp currently believes —
+        potentially wrong early in training. Using PUCT here propagates that bias
+        into the Q-values at root. Random selection gives unbiased Q-value estimates:
+        the noise averages out over many simulations, and root Q-values converge to
+        the correct game value regardless of where NNp starts.
+        """
+        node = root
+
+        # Step 1: tree policy — PUCT until we reach an unexpanded node
+        while node.is_expanded():
             node = self._select(node)
-            depth += 1
 
-        # Expansion: add all children via NNd
-        if depth < self.d_max:
-            self._expand(node)
+        # Step 2: expand — NNd creates child states and adds them to the tree
+        self._expand(node)
 
-        # Evaluation: estimate leaf value with NNp
-        value = self._evaluate(node)
+        # Step 3: randomly pick one child as the rollout starting point
+        nc = node.children[random.choice(list(node.children.keys()))]
 
-        self._backpropogation(node, value)
+        # Step 4: rollout — d_max NNd steps from Nc, actions sampled from NNp
+        sigma = nc.state                                  # [1, abstract_dim]
+        for _ in range(self.d_max):
+            nnp_out = _net_fwd(self.nn_p, sigma)[0]       # [value, logit_L, logit_R]
+            probs   = np.array(jax.nn.softmax(nnp_out[1:]))
+            a_idx   = int(np.random.choice(len(self.action_space), p=probs))
+            onehot  = jnp.eye(len(self.action_space))[a_idx : a_idx + 1]
+            sigma   = _net_fwd(self.nn_d,
+                               jnp.concatenate([sigma, onehot], axis=1))[:, :sigma.shape[1]]
+
+        # Step 5: evaluate rollout endpoint with NNp
+        vm = float(_net_fwd(self.nn_p, sigma)[0, 0])
+
+        # Step 6: backpropagate vm from Nc through the tree to root
+        self._backpropogation(nc, vm)
 
     def _select(self, node):
         """PUCT action selection.
@@ -131,17 +161,22 @@ class MCTS:
         abstract_dim = sigma.shape[1]
         num_actions  = len(self.action_space)
 
-        # Policy priors — one NNp call (JIT compiled by _net_fwd)
-        nnp_out      = _net_fwd(self.nn_p, sigma)[0]    # [value, logit_L, logit_R]
-        policy_probs = jax.nn.softmax(nnp_out[1:])
-
-        # At the root, mix in Dirichlet noise (AlphaZero convention).
-        # Without noise, a slight initial bias in NNp feeds back through MCTS visit
-        # counts → policy targets → training → stronger bias (policy collapse).
-        # Dirichlet noise breaks this loop by forcing the root to explore all actions.
+        # Policy priors for PUCT.
+        # At the root: use NNp policy + Dirichlet noise.
+        #   Dirichlet noise prevents the policy from collapsing to whatever NNp
+        #   happens to prefer early in training (positive feedback loop).
+        # At non-root nodes: uniform priors.
+        #   NNp policy is only well-calibrated at root (depth 0) early in training.
+        #   Using biased NNp priors at deeper nodes amplifies policy errors through
+        #   every PUCT level — MCTS ends up exploring only one subtree regardless
+        #   of what Q-values say. Uniform priors let Q-values dominate at depth > 0.
         if node.parent is None:
+            nnp_out      = _net_fwd(self.nn_p, sigma)[0]
+            policy_probs = jax.nn.softmax(nnp_out[1:])
             noise        = jnp.array(np.random.dirichlet([self.dir_alpha] * num_actions))
             policy_probs = (1 - self.dir_epsilon) * policy_probs + self.dir_epsilon * noise
+        else:
+            policy_probs = jnp.ones(num_actions) / num_actions
 
         # Batch all NNd calls: tile σ and append each action's one-hot
         # Result: one XLA kernel dispatch instead of num_actions separate calls

@@ -1,36 +1,51 @@
 # Central configuration for the AlphaZero / MuZero project.
 # All hyperparameters live here so they can be changed in one place.
-
-game = {
-    "max_position": 5,   # Win at +5, lose at -5, start at 0
-}
+#
+# Network dimensions are NOT stored here — they are derived at startup from
+# the game object (game.state_dim, game.num_actions) and the tuning knobs below.
+#
+#   NNr full dims: [state_dim]              + nnr_hidden + [abstract_dim]
+#   NNp full dims: [abstract_dim]           + nnp_hidden + [1 + num_actions]
+#   NNd full dims: [abstract_dim+num_actions] + nnd_hidden + [abstract_dim + 1]
+#
+# To change network depth/width, edit the hidden lists below (e.g. [128, 64]).
+# To swap games, change the game import in train_system.py — nothing else.
 
 mcts = {
-    "num_simulations": 20,  # Simulations per move (reduced from 50; 20 is sufficient for LineWorld)
-    "c": 2,                 # Exploration constant in PUCT formula
-    "d_max": 1,             # Max search depth in abstract space (no terminal check in u-MCTS)
-    "dir_alpha":   0.3,     # Dirichlet concentration for root exploration noise
-    "dir_epsilon": 0.25,    # Weight of noise vs network policy at root
+    "num_simulations": 10,   # Simulations per move
+    "c": 2,                  # Exploration constant in PUCT formula
+    "d_max": 1,              # Rollout depth: NNd steps from the randomly-picked child Nc
+    "dir_alpha":   0.3,      # Dirichlet concentration for root exploration noise
+    "dir_epsilon": 0.25,     # Weight of noise vs network policy at root
 }
 
 nn = {
-    # Stage 3: NNr encodes real states; NNp predicts from abstract states.
-    # Stage 4A adds NNd: given abstract state + action, predict next abstract state + reward.
-    #
-    # NNr: real_state(1) → hidden(8) → abstract_state(4)
-    # NNp: abstract_state(4) → hidden(16) → [value, logit_L, logit_R]
-    # NNd: [abstract_state(4) ++ action_onehot(2)] → hidden(16) → [next_abstract(4), reward(1)]
-    "nnr_dims": [1, 8, 4],
-    "nnp_dims": [4, 16, 3],
-    "nnd_dims": [6, 16, 5],   # input: 4 (abstract) + 2 (action onehot); output: 4 (next σ) + 1 (reward)
-    "abstract_dim": 4,        # must match nnr_dims[-1] and nnp_dims[0] and nnd_dims[0]-num_actions
-    "num_actions": 2,
-    "learning_rate": 0.01,
+    # abstract_dim: width of the latent state vector (shared across NNr/NNp/NNd).
+    # nnr/nnp/nnd_hidden: hidden layer widths — change to adjust depth and width.
+    #   e.g. "nnr_hidden": [128, 64]  gives a two-hidden-layer NNr.
+    "abstract_dim": 16,
+    "nnr_hidden":   [128, 128, 128],
+    "nnp_hidden":   [128, 128, 128],
+    "nnd_hidden":   [128, 128, 128],
+    "learning_rate": 0.001,
 }
 
 training = {
-    "num_iterations":    10,   # Self-play / train cycles
-    "episodes_per_iter": 5,  # reduced from 20; fewer episodes, more iterations is faster
-    "epochs_per_iter":   20,
-    "roll_ahead":         3,   # w: steps to unroll NNd during BPTT 
+    "num_iterations":    10,
+    "episodes_per_iter": 3,
+    "epochs_per_iter":   100,
+    "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
+}
+
+viz = {
+    # eval_every: evaluate the model every N training iterations.
+    # Each checkpoint plays eval_games MCTS games — set eval_every=0 to skip
+    # entirely and avoid slowing down training.
+    "eval_every":  2,       # 0 = off; N = evaluate after every N-th iteration
+    "eval_games":  5,       # games per checkpoint (small = fast)
+
+    # replay_after_training: render one greedy game to stdout after training.
+    # Set False to suppress output when running unattended.
+    "replay_after_training": True,
+    "replay_max_steps":      50,
 }

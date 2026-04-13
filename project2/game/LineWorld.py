@@ -4,11 +4,19 @@ class LineWorld:
         self.max_position = 5
         self.reward_right = 1
         self.reward_left = -1
+        self.state_dim    = 1
+        self.num_actions  = 2
+        self.reward_scale = 1.0   # rewards are ±1; no scaling needed
     
 
     def initial_state(self):
         return 0
     
+
+    @property
+    def action_space(self):
+        """All possible actions regardless of current state."""
+        return ["LEFT", "RIGHT"]
 
     def legal_actions(self, state):
         if self.is_terminal(state):
@@ -34,6 +42,13 @@ class LineWorld:
 
     def is_terminal(self, state):
         return abs(state) == self.max_position
+
+    def is_win(self, state):
+        return state == self.max_position
+
+    def max_tile(self, state):
+        """Return the current position (used by evaluate for progress reporting)."""
+        return int(state)
     
     def render(self, state):
             positions = list(range(-self.max_position, self.max_position + 1))

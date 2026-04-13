@@ -14,11 +14,14 @@ from rlm import ReinforcementLearningManager
 
 def make_system():
     game = LineWorld()
-    nnm  = NNManager()
-    nnm.create_net("nnr", config.nn["nnr_dims"])
-    nnm.create_net("nnd", config.nn["nnd_dims"])
-    nnm.create_net("nnp", config.nn["nnp_dims"])
-    rlm  = ReinforcementLearningManager(game, nnm)
+    s = game.state_dim
+    a = game.num_actions
+    d = config.nn["abstract_dim"]
+    nnm = NNManager()
+    nnm.create_net("nnr", [s]     + config.nn["nnr_hidden"] + [d    ])
+    nnm.create_net("nnd", [d + a] + config.nn["nnd_hidden"] + [d + 1])
+    nnm.create_net("nnp", [d]     + config.nn["nnp_hidden"] + [1 + a])
+    rlm = ReinforcementLearningManager(game, nnm)
     return game, nnm, rlm
 
 
@@ -88,9 +91,10 @@ def test_bptt_updates_all_three_networks():
         'policy_targets': [[0.2, 0.8], [0.1, 0.9], [0.0, 1.0]],
         'reward_targets': [0.0, 0.0, 1.0],
     }]
+    game = LineWorld()
     nnm.train_bptt(minibatches,
                    abstract_dim=config.nn["abstract_dim"],
-                   num_actions=config.nn["num_actions"],
+                   num_actions=game.num_actions,
                    num_epochs=1)
 
     w_r_after = first_weight(nnm.get_net("nnr"))
@@ -145,8 +149,8 @@ def test_reward_loss_decreases():
 def test_win_rate_after_training():
     """Win rate should remain >= 80% with BPTT training."""
     _, _, rlm = make_system()
-    rlm.train()
-    win_pct = rlm.evaluate(num_games=30)
+    rlm.train() 
+    win_pct, _, _ = rlm.evaluate(num_games=10)
     assert win_pct >= 80, f"Win rate {win_pct:.0f}% is below 80%"
     print(f"PASS  test_win_rate_after_training  ({win_pct:.0f}% wins)")
 

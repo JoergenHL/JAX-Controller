@@ -68,7 +68,7 @@ class NNManager:
             Called via jax.vmap — params are shared (not batched), data is per-sample.
             Gradients flow: loss ← NNp ← NNd ← NNd ← NNd ← NNr (one pass).
             """
-            sigma = nnx.merge(gdef_r, params_r)(state[None, None])  # [1, 1] → [1, abstract_dim]
+            sigma = nnx.merge(gdef_r, params_r)(jnp.atleast_2d(state))  # [1, state_dim] → [1, abstract_dim]
 
             total_v = jnp.array(0.0)
             total_p = jnp.array(0.0)
@@ -117,11 +117,19 @@ class NNManager:
         print(f"  Training NNr+NNd+NNp via BPTT for {num_epochs} epochs "
               f"({len(minibatches)} windows, roll_ahead={roll_ahead})...")
 
+        def _clip_grads(grads, max_norm=1.0):
+            """Clip gradient tree by global L2 norm to prevent explosion."""
+            leaves = jax.tree_util.tree_leaves(grads)
+            global_norm = jnp.sqrt(sum(jnp.sum(g ** 2) for g in leaves))
+            scale = jnp.minimum(1.0, max_norm / (global_norm + 1e-8))
+            return jax.tree_util.tree_map(lambda g: g * scale, grads)
+
         history = []
         for epoch in range(num_epochs):
             (_, (v_loss, p_loss, r_loss)), (gr, gd, gp) = grad_fn(
                 params_r, params_d, params_p
             )
+            gr, gd, gp = _clip_grads(gr), _clip_grads(gd), _clip_grads(gp)
             params_r = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_r, gr)
             params_d = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_d, gd)
             params_p = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_p, gp)

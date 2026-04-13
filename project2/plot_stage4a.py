@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Stage 4A visualization: NNd predictions + BPTT training loss."""
-
+    
 from pathlib import Path
 import jax
 import jax.numpy as jnp

@@ -1,6 +1,7 @@
 """Reinforcement Learning Manager."""
 
 import random
+import numpy as np
 import jax.numpy as jnp
 from mcts.mcts import MCTS
 from buffer import EpisodeBuffer
@@ -32,7 +33,7 @@ class ReinforcementLearningManager:
             nn_r         = nn_manager.get_net("nnr"),
             nn_d         = nn_manager.get_net("nnd"),
             nn_p         = nn_manager.get_net("nnp"),
-            action_space = self.gsm.legal_actions(self.gsm.initial_state()),
+            action_space = self.gsm.action_space,
             use_puct     = True,
             dir_alpha    = config.mcts["dir_alpha"],
             dir_epsilon  = config.mcts["dir_epsilon"],
@@ -74,8 +75,11 @@ class ReinforcementLearningManager:
         states, actions, rewards, policies = [], [], [], []
 
         state = self.gsm.initial_state()
-        while not self.gsm.is_terminal(state):
+        max_steps = 500   # safety bound for games without a natural early terminal
+        steps = 0
+        while not self.gsm.is_terminal(state) and steps < max_steps:
             states.append(state)
+            steps += 1
 
             _, policy, _ = self.mcts.search(state)
 
@@ -124,11 +128,15 @@ class ReinforcementLearningManager:
         epochs           = epochs           or config.training["epochs_per_iter"]
 
         print(f"\n{'='*50}")
-        print("AlphaZero self-play training")
+        print("Self-play training")
         print(f"{'='*50}\n")
 
-        all_losses = []       # (total, value, policy) per epoch, all iterations
-        iter_boundaries = []  # epoch index at which each iteration begins
+        all_losses      = []   # (total, value, policy, reward) per epoch, all iterations
+        iter_boundaries = []   # epoch index at which each iteration begins
+        eval_scores     = []   # (iteration, pct, avg_tile, [tile_per_game]) when enabled
+
+        eval_every = config.viz.get("eval_every", 0)
+        eval_games = config.viz.get("eval_games", 5)
 
         for it in range(num_iterations):
             print(f"[Iteration {it+1}/{num_iterations}]")
@@ -150,9 +158,17 @@ class ReinforcementLearningManager:
             if iter_losses:
                 all_losses.extend(iter_losses)
 
-            print(f"  Buffer: {self.episode_buffer.size()} episodes\n")
+            print(f"  Buffer: {self.episode_buffer.size()} episodes")
 
-        return {'losses': all_losses, 'iter_boundaries': iter_boundaries}
+            # Optional in-training evaluation — off by default (eval_every=0)
+            if eval_every > 0 and (it + 1) % eval_every == 0:
+                pct, avg_tile, tiles = self.evaluate(num_games=eval_games)
+                eval_scores.append((it + 1, pct, avg_tile, tiles))
+
+            print()
+
+        return {'losses': all_losses, 'iter_boundaries': iter_boundaries,
+                'eval_scores': eval_scores}
 
     def _train_networks(self, epochs):
         """Build BPTT minibatches from the episode buffer and train all three networks.
@@ -173,9 +189,14 @@ class ReinforcementLearningManager:
         if self.episode_buffer.size() == 0:
             return None
 
-        action_order  = self.gsm.legal_actions(self.gsm.initial_state())
+        action_order  = self.gsm.action_space
         action_to_idx = {a: i for i, a in enumerate(action_order)}
         roll_ahead    = config.training["roll_ahead"]
+
+        # Normalize reward/value targets by a game-specific scale so that loss
+        # magnitudes stay comparable regardless of reward range (e.g. 2048
+        # rewards can be 16+ per merge; LineWorld rewards are ±1).
+        scale = self.gsm.reward_scale
 
         minibatches = []
         for ep_idx in range(self.episode_buffer.size()):
@@ -194,11 +215,11 @@ class ReinforcementLearningManager:
                     p_arrays.append([pt.get(a, 0.0) / total for a in action_order])
 
                 minibatches.append({
-                    'state':          float(states[k]),
+                    'state':          np.array(states[k], dtype=np.float32).flatten(),
                     'action_indices': [action_to_idx[a] for a in actions[k : k + roll_ahead]],
-                    'value_targets':  [float(v) for v in returns[k : k + roll_ahead]],
+                    'value_targets':  [float(v) / scale for v in returns[k : k + roll_ahead]],
                     'policy_targets': p_arrays,
-                    'reward_targets': [float(r) for r in rewards[k : k + roll_ahead]],
+                    'reward_targets': [float(r) / scale for r in rewards[k : k + roll_ahead]],
                 })
 
         if not minibatches:
@@ -207,25 +228,36 @@ class ReinforcementLearningManager:
         return self.nnm.train_bptt(
             minibatches,
             abstract_dim=config.nn["abstract_dim"],
-            num_actions=config.nn["num_actions"],
+            num_actions=self.gsm.num_actions,
             num_epochs=epochs,
             learning_rate=config.nn["learning_rate"],
         )
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
 
-    def evaluate(self, num_games=20):
-        """Play num_games using the current MCTS+network policy and report win rate."""
+    def evaluate(self, num_games=10):
+        """Play num_games using the current MCTS+network policy.
+
+        Returns:
+            pct:       win rate (0–100)
+            avg_tile:  average max tile across all games
+            max_tiles: list of max tile per game (length = num_games)
+        """
         print(f"\n  Evaluating ({num_games} games)...")
         wins = 0
+        max_tiles = []
         for _ in range(num_games):
-            i = 0
             state = self.gsm.initial_state()
-            while not self.gsm.is_terminal(state) and i < 20:
+            steps = 0
+            while not self.gsm.is_terminal(state) and steps < 500:
                 action, _, _ = self.mcts.search(state)
                 state = self.gsm.next_state(state, action)
-            if state == self.gsm.max_position:
+                steps += 1
+            if self.gsm.is_win(state):
                 wins += 1
-        pct = 100 * wins / num_games
-        print(f"  Win rate: {wins}/{num_games} ({pct:.0f}%)")
-        return pct
+            max_tiles.append(self.gsm.max_tile(state))
+        pct      = 100 * wins / num_games
+        avg_tile = sum(max_tiles) / len(max_tiles)
+        best     = max(max_tiles)
+        print(f"  Tiles: {max_tiles}  avg={avg_tile:.0f}  best={best}")
+        return pct, avg_tile, max_tiles
