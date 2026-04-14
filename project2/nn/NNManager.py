@@ -1,6 +1,7 @@
 from flax import nnx
 import jax
 import jax.numpy as jnp
+import optax
 
 from nn.nn import MLP
 
@@ -90,6 +91,13 @@ class NNManager:
 
             return total_v / roll_ahead, total_p / roll_ahead, total_r / roll_ahead
 
+        # Loss weights: value is down-weighted following the MuZero paper (0.25)
+        # to prevent it from being crowded out by the policy cross-entropy loss,
+        # which tends to dominate on an equal-weight sum early in training.
+        import config as _config
+        lw = _config.nn.get("loss_weights", {"value": 0.25, "policy": 1.0, "reward": 1.0})
+        w_v, w_p, w_r = lw["value"], lw["policy"], lw["reward"]
+
         def batch_loss(params_r, params_d, params_p):
             """Mean loss over all windows, computed via vmap.
 
@@ -107,7 +115,15 @@ class NNManager:
             v_mean = jnp.mean(v_l)
             p_mean = jnp.mean(p_l)
             r_mean = jnp.mean(r_l)
-            return v_mean + p_mean + r_mean, (v_mean, p_mean, r_mean)
+            return w_v * v_mean + w_p * p_mean + w_r * r_mean, (v_mean, p_mean, r_mean)
+
+        # Adam optimizer — maintains per-parameter first + second moment estimates,
+        # giving momentum and adaptive learning rates. Converges significantly faster
+        # than vanilla SGD, especially under sparse rewards (e.g. 2048 early training).
+        optimizer = optax.adam(learning_rate)
+        opt_state_r = optimizer.init(params_r)
+        opt_state_d = optimizer.init(params_d)
+        opt_state_p = optimizer.init(params_p)
 
         # Compile once: the entire batch forward + backward pass becomes one XLA kernel.
         grad_fn = jax.jit(
@@ -130,9 +146,12 @@ class NNManager:
                 params_r, params_d, params_p
             )
             gr, gd, gp = _clip_grads(gr), _clip_grads(gd), _clip_grads(gp)
-            params_r = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_r, gr)
-            params_d = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_d, gd)
-            params_p = jax.tree_util.tree_map(lambda w, g: w - learning_rate * g, params_p, gp)
+            updates_r, opt_state_r = optimizer.update(gr, opt_state_r, params_r)
+            updates_d, opt_state_d = optimizer.update(gd, opt_state_d, params_d)
+            updates_p, opt_state_p = optimizer.update(gp, opt_state_p, params_p)
+            params_r = optax.apply_updates(params_r, updates_r)
+            params_d = optax.apply_updates(params_d, updates_d)
+            params_p = optax.apply_updates(params_p, updates_p)
 
             total = float(v_loss) + float(p_loss) + float(r_loss)
             history.append((total, float(v_loss), float(p_loss), float(r_loss)))

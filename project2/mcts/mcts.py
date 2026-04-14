@@ -170,13 +170,16 @@ class MCTS:
         #   Using biased NNp priors at deeper nodes amplifies policy errors through
         #   every PUCT level — MCTS ends up exploring only one subtree regardless
         #   of what Q-values say. Uniform priors let Q-values dominate at depth > 0.
-        if node.parent is None:
-            nnp_out      = _net_fwd(self.nn_p, sigma)[0]
-            policy_probs = jax.nn.softmax(nnp_out[1:])
+        # Policy priors for PUCT — use NNp at every node (root and non-root).
+        # NNp priors guide exploration toward promising actions; uniform priors
+        # reduce PUCT to plain UCB, wasting the policy network's signal.
+        # Dirichlet noise is added only at the root to encourage self-play diversity.
+        nnp_out      = _net_fwd(self.nn_p, sigma)[0]
+        policy_probs = jax.nn.softmax(nnp_out[1:])
+
+        if node.parent is None:   # root: mix in exploration noise
             noise        = jnp.array(np.random.dirichlet([self.dir_alpha] * num_actions))
             policy_probs = (1 - self.dir_epsilon) * policy_probs + self.dir_epsilon * noise
-        else:
-            policy_probs = jnp.ones(num_actions) / num_actions
 
         # Batch all NNd calls: tile σ and append each action's one-hot
         # Result: one XLA kernel dispatch instead of num_actions separate calls

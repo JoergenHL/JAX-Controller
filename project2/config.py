@@ -12,7 +12,7 @@
 # To swap games, change the game import in train_system.py — nothing else.
 
 mcts = {
-    "num_simulations": 200,   # Simulations per move
+    "num_simulations": 10,   # Simulations per move
     "c": 2,                  # Exploration constant in PUCT formula
     "d_max": 1,              # Rollout depth: NNd steps from the randomly-picked child Nc
     "dir_alpha":   0.3,      # Dirichlet concentration for root exploration noise
@@ -28,10 +28,13 @@ nn = {
     "nnp_hidden":   [128, 128, 128],
     "nnd_hidden":   [128, 128, 128],    
     "learning_rate": 0.001,
+    # MuZero paper weights value loss at 0.25 — prevents it being crowded out
+    # by policy cross-entropy, which occupies a larger scale early in training.
+    "loss_weights": {"value": 0.25, "policy": 1.0, "reward": 1.0},
 }
 
 training = {
-    "num_iterations":    10,
+    "num_iterations":    3,
     "episodes_per_iter": 3,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
@@ -67,5 +70,5 @@ viz = {
     # Shows how much planning adds on top of the greedy NNr+NNp policy.
     # Slow (100 sims/step) — keep mcts_eval_games small.
     "compare_mcts":     True,
-    "mcts_eval_games":  5,
+    "mcts_eval_games":  1,
 }
