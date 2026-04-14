@@ -149,5 +149,36 @@ class NNManager:
         nnx.update(nn_p, params_p)
         return history
 
+    # ── Persistence ────────────────────────────────────────────────────────────
+
+    def save(self, path: str):
+        """Persist all network weights to a pickle file.
+
+        Uses nnx.split to separate the static graph structure (GraphDef) from
+        the trainable parameters (State). Both are required by nnx.merge on load.
+        All networks in the manager are saved under their names as keys.
+        """
+        import pickle
+        data = {}
+        for name, model in self.models.items():
+            gdef, state = nnx.split(model)
+            data[name] = (gdef, state)
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+        print(f"  Model saved → {path}")
+
+    def load(self, path: str):
+        """Restore network weights from a pickle file.
+
+        Reconstructs each model with nnx.merge and replaces the entry in
+        self.models. Call this on an empty NNManager — no need to pre-create
+        networks with create_net(); the GraphDef carries the architecture.
+        """
+        import pickle
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        for name, (gdef, state) in data.items():
+            self.models[name] = nnx.merge(gdef, state)
+
 
 

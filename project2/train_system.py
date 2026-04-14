@@ -51,8 +51,16 @@ pct, avg_tile, tiles = rlm.evaluate(num_games=10)
 network_dims = {"nnr": nnr_dims, "nnp": nnp_dims, "nnd": nnd_dims}
 logger = RunLogger(game, config, network_dims)
 logger.log_run(result)
+logger.log_eval(pct, avg_tile, tiles)
 json_path = logger.save()
 
+# ── Model checkpoint ───────────────────────────────────────────────────────────
+model_path = json_path.replace(".json", ".pkl")
+logger.data["model_path"] = model_path
+json_path = logger.save()   # re-save JSON with model_path recorded
+nnm.save(model_path)
+
+# ── Baseline comparison ────────────────────────────────────────────────────────
 baseline_scores = None
 if config.viz.get("compare_baseline", False):
     baseline_agent = RandomBaseline(game)

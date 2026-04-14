@@ -13,22 +13,30 @@ Each episode consists of:
 
 
 class EpisodeBuffer:
-    """Stores episodes for training."""
-    
-    def __init__(self):
-        """Initialize empty episode buffer."""
-        self.episodes = []
-    
-    def add_episode(self, states, actions, rewards, policies, values):
-        """Add a complete episode to the buffer.
-        
-        Args:
-            states: List of game states visited
-            actions: List of actions taken (indices)
-            rewards: List of rewards received
-            policies: List of policy distributions (dicts with visit counts)
-            values: List of state values/evaluations
+    """Stores episodes for training, with a fixed maximum capacity.
+
+    Once the buffer is full, the oldest episode is discarded when a new one
+    arrives (FIFO). Keeping the buffer size constant is important for two
+    reasons:
+      1. Training time per iteration stays constant (batch size doesn't grow).
+      2. JAX can reuse its JIT-compiled kernel across iterations because the
+         input array shapes don't change.
+
+    A buffer of ~30 episodes ≈ the last 10 iterations of self-play data,
+    which provides diverse training samples while keeping recent experience
+    more prevalent.
+    """
+
+    def __init__(self, max_size: int):
         """
+        Args:
+            max_size: maximum number of episodes to keep (oldest discarded first).
+        """
+        self.episodes = []
+        self.max_size = max_size
+
+    def add_episode(self, states, actions, rewards, policies, values):
+        """Add a complete episode; drop the oldest if the buffer is full."""
         episode = {
             'states': states,
             'actions': actions,
@@ -36,6 +44,8 @@ class EpisodeBuffer:
             'policies': policies,  # {action: visit_count}
             'values': values
         }
+        if len(self.episodes) >= self.max_size:
+            self.episodes.pop(0)   # discard oldest
         self.episodes.append(episode)
     
     def get_episode(self, idx):

@@ -22,7 +22,9 @@ class ReinforcementLearningManager:
     def __init__(self, game_state_manager, nn_manager):
         self.gsm = game_state_manager
         self.nnm = nn_manager
-        self.episode_buffer = EpisodeBuffer()
+        self.episode_buffer = EpisodeBuffer(
+            max_size=config.training["buffer_size"]
+        )
         self.asm = ASM()
 
         # Stage 4B: u-MCTS operates entirely in abstract space.
@@ -235,7 +237,7 @@ class ReinforcementLearningManager:
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
 
-    def evaluate(self, num_games=10):
+    def evaluate(self, num_games=5):
         """Play num_games using the current MCTS+network policy.
 
         Returns:
@@ -249,7 +251,7 @@ class ReinforcementLearningManager:
         for _ in range(num_games):
             state = self.gsm.initial_state()
             steps = 0
-            while not self.gsm.is_terminal(state) and steps < 500:
+            while not self.gsm.is_terminal(state) and steps < 300:
                 action, _, _ = self.mcts.search(state)
                 state = self.gsm.next_state(state, action)
                 steps += 1

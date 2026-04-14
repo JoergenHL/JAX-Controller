@@ -84,6 +84,22 @@ class RunLogger:
 
             self.data["iterations"].append(record)
 
+    def log_eval(self, pct: float, avg_tile: float, max_tiles: list):
+        """Attach the final post-training agent evaluation to the run record.
+
+        Args:
+            pct:       win rate (0–100) from rlm.evaluate()
+            avg_tile:  average max tile across evaluation games
+            max_tiles: list of per-game max tile values
+        """
+        self.data["agent_eval"] = {
+            "num_games":    len(max_tiles),
+            "avg_max_tile": round(avg_tile, 1),
+            "max_max_tile": max(max_tiles),
+            "win_pct":      round(pct, 1),
+            "all_max_tiles": max_tiles,
+        }
+
     def log_baseline(self, pct: float, avg_tile: float, max_tiles: list):
         """Attach one-time random-baseline results to the run record.
 

@@ -24,17 +24,21 @@ nn = {
     # nnr/nnp/nnd_hidden: hidden layer widths — change to adjust depth and width.
     #   e.g. "nnr_hidden": [128, 64]  gives a two-hidden-layer NNr.
     "abstract_dim": 16,
-    "nnr_hidden":   [128, 256, 128],
-    "nnp_hidden":   [128, 256, 128],
-    "nnd_hidden":   [128, 256, 128],    
+    "nnr_hidden":   [128, 128, 128],
+    "nnp_hidden":   [128, 128, 128],
+    "nnd_hidden":   [128, 128, 128],    
     "learning_rate": 0.001,
 }
 
 training = {
-    "num_iterations":    10,
+    "num_iterations":    5,
     "episodes_per_iter": 3,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
+    # Replay buffer cap. Once full, oldest episode is dropped on each add.
+    # Keeps batch size constant → JAX JIT compiles once and reuses every iter.
+    # Rule of thumb: episodes_per_iter × ~10 iterations of history.
+    "buffer_size":       30,
 }
 
 viz = {
@@ -46,11 +50,11 @@ viz = {
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
-    "replay_after_training": True,
-    "replay_max_steps":      50,
+    "replay_after_training": False,
+    "replay_max_steps":      1000,
 
     # compare_baseline: run a random agent after training and overlay its scores
     # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.
     "compare_baseline": True,
-    "baseline_games":   20,     # more games = more stable estimate
+    "baseline_games":   10,     # more games = more stable estimate
 }
