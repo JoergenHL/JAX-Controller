@@ -12,7 +12,7 @@
 # To swap games, change the game import in train_system.py — nothing else.
 
 mcts = {
-    "num_simulations": 10,   # Simulations per move
+    "num_simulations": 200,   # Simulations per move
     "c": 2,                  # Exploration constant in PUCT formula
     "d_max": 1,              # Rollout depth: NNd steps from the randomly-picked child Nc
     "dir_alpha":   0.3,      # Dirichlet concentration for root exploration noise
@@ -31,7 +31,7 @@ nn = {
 }
 
 training = {
-    "num_iterations":    5,
+    "num_iterations":    10,
     "episodes_per_iter": 3,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
@@ -39,22 +39,33 @@ training = {
     # Keeps batch size constant → JAX JIT compiles once and reuses every iter.
     # Rule of thumb: episodes_per_iter × ~10 iterations of history.
     "buffer_size":       30,
+    # Parallel episode collectors. Each worker is a separate process with its
+    # own JAX instance and a copy of the current network weights.
+    # Set to 1 to disable parallelism (sequential, easier to debug).
+    # Maximum useful value = episodes_per_iter (one worker per episode).
+    "num_workers":        3,
 }
 
 viz = {
     # eval_every: evaluate the model every N training iterations.
-    # Each checkpoint plays eval_games MCTS games — set eval_every=0 to skip
-    # entirely and avoid slowing down training.
-    "eval_every":  0,       # 0 = off; N = evaluate after every N-th iteration
-    "eval_games":  2,       # games per checkpoint (small = fast)
+    # Each checkpoint plays eval_games greedy NNr+NNp games — fast, matches
+    # deployment. Set eval_every=0 to skip entirely.
+    "eval_every":  2,       # 0 = off; N = evaluate after every N-th iteration
+    "eval_games":  5,       # games per checkpoint
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
     "replay_after_training": False,
-    "replay_max_steps":      1000,
+    "replay_max_steps":      100,
 
     # compare_baseline: run a random agent after training and overlay its scores
     # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.
     "compare_baseline": True,
     "baseline_games":   10,     # more games = more stable estimate
+
+    # compare_mcts: run full MCTS eval (NNr+NNd+NNp) once after training.
+    # Shows how much planning adds on top of the greedy NNr+NNp policy.
+    # Slow (100 sims/step) — keep mcts_eval_games small.
+    "compare_mcts":     True,
+    "mcts_eval_games":  5,
 }

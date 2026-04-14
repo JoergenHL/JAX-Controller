@@ -12,7 +12,7 @@ import numpy as np
 # ── Loss + eval plot ───────────────────────────────────────────────────────────
 
 def plot_training(result: dict, game_name: str, network_dims: dict,
-                  save_path: str = None, baseline=None):
+                  save_path: str = None, baseline=None, mcts_eval=None):
     """Save a 3-panel training summary figure.
 
     Panels:
@@ -40,7 +40,8 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
 
     has_eval     = len(eval_scores) > 0
     has_baseline = baseline is not None
-    n_panels = 3 if (has_eval or has_baseline) else 2
+    has_mcts     = mcts_eval is not None
+    n_panels = 3 if (has_eval or has_baseline or has_mcts) else 2
     fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
     if n_panels == 1:
         axes = [axes]
@@ -73,8 +74,8 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
                 transform=ax.transAxes)
         ax.set_title("Training loss")
 
-    # ── Panel 2: Eval scores (+ optional baseline) ────────────────────────────
-    if has_eval or has_baseline:
+    # ── Panel 2: Eval scores (+ optional baseline / MCTS reference) ──────────
+    if has_eval or has_baseline or has_mcts:
         ax = axes[1]
 
         if has_eval:
@@ -107,6 +108,14 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
                        label=f"random avg ({b_avg:.0f})")
             ax.fill_between([x_lo, x_hi], b_min, b_max,
                             color="gray", alpha=0.12, label="random range")
+
+        # MCTS reference: dashed purple line at avg
+        if has_mcts:
+            _, m_avg, m_tiles = mcts_eval
+            x_lo = 0.5
+            x_hi = max(iters) + 0.5 if has_eval else 1.5
+            ax.axhline(m_avg, color="tab:purple", linestyle="--", linewidth=1.2,
+                       label=f"MCTS avg ({m_avg:.0f})")
 
         ax.set_xlabel("Iteration")
         ax.set_ylabel("Max tile")

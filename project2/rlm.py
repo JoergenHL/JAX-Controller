@@ -1,6 +1,10 @@
 """Reinforcement Learning Manager."""
 
+import contextlib
+import multiprocessing
 import random
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
 import jax.numpy as jnp
 from mcts.mcts import MCTS
@@ -111,6 +115,43 @@ class ReinforcementLearningManager:
         return {'states': states, 'actions': actions,
                 'rewards': rewards, 'policies': policies, 'returns': returns}
 
+    # ── Parallel episode collection ────────────────────────────────────────────
+
+    def _get_network_dims(self) -> dict:
+        """Read architecture dims from existing models.
+
+        Returns {name: [in_dim, h1, ..., out_dim]} by inspecting weight shapes.
+        Used to recreate the same architecture in worker processes.
+        """
+        dims = {}
+        for name, model in self.nnm.models.items():
+            model_dims = [model.layers[0].w.value.shape[0]]
+            for layer in model.layers:
+                model_dims.append(layer.w.value.shape[1])
+            dims[name] = model_dims
+        return dims
+
+    def _collect_parallel(self, n: int, pool: ProcessPoolExecutor) -> list:
+        """Submit n episode-collection tasks to the worker pool and gather results.
+
+        All n tasks are submitted before waiting on any, so they run truly in
+        parallel. The weight snapshot is taken once and shared across all tasks
+        in this round (workers receive read-only copies — no write-back).
+
+        Returns a list of n episode dicts (same format as collect_episode()).
+        """
+        from worker import collect_episode_worker
+
+        args = {
+            "game_name":    self.gsm.__class__.__name__,
+            "network_dims": self._get_network_dims(),
+            "layer_weights": self.nnm.get_layer_weights(),
+            "mcts_cfg":     dict(config.mcts),
+            "max_steps":    500,
+        }
+        futures = [pool.submit(collect_episode_worker, args) for _ in range(n)]
+        return [f.result() for f in futures]
+
     # ── Training loop ──────────────────────────────────────────────────────────
 
     def train(self, num_iterations=None, episodes_per_iter=None, epochs=None):
@@ -125,12 +166,17 @@ class ReinforcementLearningManager:
             dict with 'losses' (per-epoch history) and 'iter_boundaries'
             (epoch indices where each new iteration starts), for plotting.
         """
-        num_iterations   = num_iterations   or config.training["num_iterations"]
+        num_iterations    = num_iterations    or config.training["num_iterations"]
         episodes_per_iter = episodes_per_iter or config.training["episodes_per_iter"]
-        epochs           = epochs           or config.training["epochs_per_iter"]
+        epochs            = epochs            or config.training["epochs_per_iter"]
+
+        num_workers = config.training.get("num_workers", 1)
+        use_parallel = num_workers > 1
 
         print(f"\n{'='*50}")
         print("Self-play training")
+        if use_parallel:
+            print(f"  Episode collection: {num_workers} parallel workers")
         print(f"{'='*50}\n")
 
         all_losses      = []   # (total, value, policy, reward) per epoch, all iterations
@@ -140,34 +186,53 @@ class ReinforcementLearningManager:
         eval_every = config.viz.get("eval_every", 0)
         eval_games = config.viz.get("eval_games", 5)
 
-        for it in range(num_iterations):
-            print(f"[Iteration {it+1}/{num_iterations}]")
+        # Create a persistent worker pool (lives for all iterations so JAX
+        # initialisation cost in each worker is paid once, not per iteration).
+        # Falls back to a no-op context when running sequentially.
+        if use_parallel:
+            mp_ctx   = multiprocessing.get_context("spawn")
+            pool_ctx = ProcessPoolExecutor(max_workers=num_workers, mp_context=mp_ctx)
+        else:
+            pool_ctx = contextlib.nullcontext()
 
-            print(f"  Collecting {episodes_per_iter} episodes...")
-            for _ in range(episodes_per_iter):
-                episode = self.collect_episode()
-                self.episode_buffer.add_episode(
-                    episode['states'],
-                    episode['actions'],
-                    episode['rewards'],
-                    episode['policies'],
-                    episode['returns'],
-                )
+        with pool_ctx as pool:
+            for it in range(num_iterations):
+                print(f"[Iteration {it+1}/{num_iterations}]")
 
-            print(f"  Training for {epochs} epochs...")
-            iter_boundaries.append(len(all_losses))
-            iter_losses = self._train_networks(epochs)
-            if iter_losses:
-                all_losses.extend(iter_losses)
+                print(f"  Collecting {episodes_per_iter} episodes"
+                      f"{' (parallel)' if use_parallel else ''}...")
+                if use_parallel:
+                    episodes = self._collect_parallel(episodes_per_iter, pool)
+                else:
+                    episodes = [self.collect_episode()
+                                for _ in range(episodes_per_iter)]
 
-            print(f"  Buffer: {self.episode_buffer.size()} episodes")
+                for episode in episodes:
+                    self.episode_buffer.add_episode(
+                        episode['states'],
+                        episode['actions'],
+                        episode['rewards'],
+                        episode['policies'],
+                        episode['returns'],
+                    )
 
-            # Optional in-training evaluation — off by default (eval_every=0)
-            if eval_every > 0 and (it + 1) % eval_every == 0:
-                pct, avg_tile, tiles = self.evaluate(num_games=eval_games)
-                eval_scores.append((it + 1, pct, avg_tile, tiles))
+                print(f"  Training for {epochs} epochs...")
+                iter_boundaries.append(len(all_losses))
+                iter_losses = self._train_networks(epochs)
+                if iter_losses:
+                    all_losses.extend(iter_losses)
 
-            print()
+                print(f"  Buffer: {self.episode_buffer.size()} episodes")
+
+                # Optional in-training evaluation — off by default (eval_every=0)
+                if eval_every > 0 and (it + 1) % eval_every == 0:
+                    pct, avg_tile, tiles = self.evaluate(
+                        num_games=eval_games,
+                        pool=pool if use_parallel else None,
+                    )
+                    eval_scores.append((it + 1, pct, avg_tile, tiles))
+
+                print()
 
         return {'losses': all_losses, 'iter_boundaries': iter_boundaries,
                 'eval_scores': eval_scores}
@@ -237,15 +302,86 @@ class ReinforcementLearningManager:
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
 
-    def evaluate(self, num_games=5):
-        """Play num_games using the current MCTS+network policy.
+    def evaluate(self, num_games=10, pool=None):
+        """Play num_games using greedy NNr → NNp (no MCTS, no NNd).
+
+        Matches run_agent.py exactly — this is what the deployed agent does.
+        Runs in parallel when num_workers > 1 and a pool is supplied (or
+        a temporary pool is created internally).
 
         Returns:
             pct:       win rate (0–100)
             avg_tile:  average max tile across all games
             max_tiles: list of max tile per game (length = num_games)
         """
-        print(f"\n  Evaluating ({num_games} games)...")
+        from worker import evaluate_greedy_worker
+
+        num_workers = config.training.get("num_workers", 1)
+        use_parallel = num_workers > 1
+
+        print(f"\n  Evaluating greedy NNr+NNp ({num_games} games"
+              f"{', parallel' if use_parallel else ''})...")
+
+        args = {
+            "game_name":    self.gsm.__class__.__name__,
+            "network_dims": {k: v for k, v in self._get_network_dims().items()
+                             if k in ("nnr", "nnp")},
+            "layer_weights": {k: v for k, v in self.nnm.get_layer_weights().items()
+                              if k in ("nnr", "nnp")},
+            "num_games":    num_games,
+            "max_steps":    500,
+        }
+
+        if use_parallel:
+            # Split games evenly across workers; last worker gets the remainder.
+            games_per_worker = num_games // num_workers
+            remainder        = num_games % num_workers
+            splits = [games_per_worker + (1 if i < remainder else 0)
+                      for i in range(num_workers)]
+            splits = [s for s in splits if s > 0]
+
+            def _run(pool_obj):
+                worker_args = [{**args, "num_games": n} for n in splits]
+                futures = [pool_obj.submit(evaluate_greedy_worker, a)
+                           for a in worker_args]
+                wins      = 0
+                max_tiles = []
+                for f in futures:
+                    r = f.result()
+                    wins      += r["wins"]
+                    max_tiles += r["max_tiles"]
+                return wins, max_tiles
+
+            if pool is not None:
+                wins, max_tiles = _run(pool)
+            else:
+                mp_ctx = multiprocessing.get_context("spawn")
+                with ProcessPoolExecutor(max_workers=num_workers,
+                                         mp_context=mp_ctx) as tmp_pool:
+                    wins, max_tiles = _run(tmp_pool)
+        else:
+            result   = evaluate_greedy_worker(args)
+            wins      = result["wins"]
+            max_tiles = result["max_tiles"]
+
+        pct      = 100 * wins / num_games
+        avg_tile = sum(max_tiles) / len(max_tiles)
+        best     = max(max_tiles)
+        print(f"  Tiles: {max_tiles}  avg={avg_tile:.0f}  best={best}")
+        return pct, avg_tile, max_tiles
+
+    def evaluate_mcts(self, num_games=5):
+        """Play num_games using the current MCTS+network policy (NNr+NNd+NNp).
+
+        Slower than evaluate() — use for an upper-bound comparison of how
+        much planning adds on top of the greedy policy.
+
+        Returns:
+            pct:       win rate (0–100)
+            avg_tile:  average max tile across all games
+            max_tiles: list of max tile per game (length = num_games)
+        """
+        print(f"\n  Evaluating MCTS ({num_games} games)...")
         wins = 0
         max_tiles = []
         for _ in range(num_games):

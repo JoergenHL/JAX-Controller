@@ -116,6 +116,22 @@ class RunLogger:
             "all_max_tiles": max_tiles,
         }
 
+    def log_mcts_eval(self, pct: float, avg_tile: float, max_tiles: list):
+        """Attach one-time MCTS evaluation results to the run record.
+
+        Args:
+            pct:       win rate (0–100) from rlm.evaluate_mcts()
+            avg_tile:  average max tile across evaluation games
+            max_tiles: list of per-game max tile values
+        """
+        self.data["mcts_eval"] = {
+            "num_games":    len(max_tiles),
+            "avg_max_tile": round(avg_tile, 1),
+            "max_max_tile": max(max_tiles),
+            "win_pct":      round(pct, 1),
+            "all_max_tiles": max_tiles,
+        }
+
     def save(self, runs_dir: str = "runs") -> str:
         """Write JSON to runs/<run_name>.json. Returns the file path."""
         os.makedirs(runs_dir, exist_ok=True)

@@ -149,6 +149,36 @@ class NNManager:
         nnx.update(nn_p, params_p)
         return history
 
+    # ── Weight serialisation ───────────────────────────────────────────────────
+
+    def get_layer_weights(self) -> dict:
+        """Extract all network weights as plain numpy arrays.
+
+        Returns {name: [(w_np, b_np), ...]} — one list of (weight, bias) pairs
+        per network, ordered by layer index. Used to send a frozen weight
+        snapshot to worker processes without passing JAX objects.
+        """
+        import numpy as np
+        return {
+            name: [
+                (np.asarray(layer.w.value), np.asarray(layer.b.value))
+                for layer in model.layers
+            ]
+            for name, model in self.models.items()
+        }
+
+    def set_layer_weights(self, weights: dict):
+        """Load numpy weight arrays into existing models.
+
+        Args:
+            weights: same structure as get_layer_weights() returns.
+        """
+        for name, layer_weights in weights.items():
+            model = self.models[name]
+            for layer, (w, b) in zip(model.layers, layer_weights):
+                layer.w.value = jnp.array(w)
+                layer.b.value = jnp.array(b)
+
     # ── Persistence ────────────────────────────────────────────────────────────
 
     def save(self, path: str):
