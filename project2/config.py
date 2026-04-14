@@ -1,4 +1,4 @@
-# Central configuration for the AlphaZero / MuZero project.
+# Central configuration for the MuZero project.
 # All hyperparameters live here so they can be changed in one place.
 #
 # Network dimensions are NOT stored here — they are derived at startup from
@@ -34,14 +34,19 @@ nn = {
 }
 
 training = {
-    "num_iterations":    10,
-    "episodes_per_iter": 3,
+    "num_iterations":    100,
+    "episodes_per_iter": 9,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
     # Replay buffer cap. Once full, oldest episode is dropped on each add.
     # Keeps batch size constant → JAX JIT compiles once and reuses every iter.
     # Rule of thumb: episodes_per_iter × ~10 iterations of history.
-    "buffer_size":       30,
+    "buffer_size":       90 ,
+    # N-step bootstrap horizon (MuZero Section 3).
+    # Value target at step k: z_k = r_{k+1}+...+r_{k+n} + v_{k+n}
+    # Uses MCTS value estimate v_{k+n} to cap variance at n steps instead
+    # of summing 200-400 stochastic rewards to end of game.
+    "n_step":            10,
     # Parallel episode collectors. Each worker is a separate process with its
     # own JAX instance and a copy of the current network weights.
     # Set to 1 to disable parallelism (sequential, easier to debug).
@@ -59,7 +64,7 @@ viz = {
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
     "replay_after_training": False,
-    "replay_max_steps":      100,
+    "replay_max_steps":      50,
 
     # compare_baseline: run a random agent after training and overlay its scores
     # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.

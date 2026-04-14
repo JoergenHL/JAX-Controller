@@ -78,7 +78,7 @@ class ReinforcementLearningManager:
         every state in a winning episode gets return +1 and every state in a
         losing episode gets return -1.
         """
-        states, actions, rewards, policies = [], [], [], []
+        states, actions, rewards, policies, mcts_values = [], [], [], [], []
 
         state = self.gsm.initial_state()
         max_steps = 500   # safety bound for games without a natural early terminal
@@ -87,7 +87,11 @@ class ReinforcementLearningManager:
             states.append(state)
             steps += 1
 
-            _, policy, _ = self.mcts.search(state)
+            _, policy, mcts_val = self.mcts.search(state)
+            # Store the MCTS root value estimate for n-step bootstrap targets.
+            # These replace pure Monte-Carlo returns in _train_networks, cutting
+            # value-target variance from ~200-step horizon to n_step horizon.
+            mcts_values.append(mcts_val)
 
             # Sample action from MCTS visit distribution (AlphaZero training convention).
             # Argmax would always pick LEFT when values are uniform (equal visit counts),
@@ -106,14 +110,8 @@ class ReinforcementLearningManager:
 
             state = next_state
 
-        # G_t = r_t + r_{t+1} + … + r_T  (gamma = 1, no discounting)
-        returns, G = [], 0
-        for r in reversed(rewards):
-            G += r
-            returns.insert(0, G)
-
         return {'states': states, 'actions': actions,
-                'rewards': rewards, 'policies': policies, 'returns': returns}
+                'rewards': rewards, 'policies': policies, 'values': mcts_values}
 
     # ── Parallel episode collection ────────────────────────────────────────────
 
@@ -213,7 +211,7 @@ class ReinforcementLearningManager:
                         episode['actions'],
                         episode['rewards'],
                         episode['policies'],
-                        episode['returns'],
+                        episode['values'],
                     )
 
                 print(f"  Training for {epochs} epochs...")
@@ -259,6 +257,7 @@ class ReinforcementLearningManager:
         action_order  = self.gsm.action_space
         action_to_idx = {a: i for i, a in enumerate(action_order)}
         roll_ahead    = config.training["roll_ahead"]
+        n_step        = config.training.get("n_step", 10)
 
         # Normalize reward/value targets by a game-specific scale so that loss
         # magnitudes stay comparable regardless of reward range (e.g. 2048
@@ -267,15 +266,30 @@ class ReinforcementLearningManager:
 
         minibatches = []
         for ep_idx in range(self.episode_buffer.size()):
-            ep      = self.episode_buffer.get_episode(ep_idx)
-            states  = ep['states']
-            actions = ep['actions']
-            returns = ep['values']    # per-step returns G_t
+            ep       = self.episode_buffer.get_episode(ep_idx)
+            states   = ep['states']
+            actions  = ep['actions']
+            mcts_vs  = ep['values']   # per-step MCTS value estimates (not MC returns)
             policies = ep['policies']
             rewards  = ep['rewards']
+            T        = len(states)
+
+            # N-step bootstrap targets (MuZero Section 3):
+            #   z_k = sum(rewards[k:k+n]) / scale  +  v_{k+n}
+            # Rewards are raw game values and must be divided by scale.
+            # v_{k+n} is the MCTS root value, which is already in normalized
+            # units (NNd/NNp outputs are trained on scale-divided targets) —
+            # so it must NOT be divided by scale again.
+            # ^ not used anymore, loss exploded
+            mc_returns = []
+            G = 0.0
+            for r in reversed(rewards):
+                G += r
+                mc_returns.insert(0, G / scale)
+            
 
             # Each valid starting step k needs roll_ahead more steps after it
-            for k in range(len(states) - roll_ahead + 1):
+            for k in range(T - roll_ahead + 1):
                 p_arrays = []
                 for pt in policies[k : k + roll_ahead]:
                     total = sum(pt.values()) or 1
@@ -284,7 +298,7 @@ class ReinforcementLearningManager:
                 minibatches.append({
                     'state':          np.array(states[k], dtype=np.float32).flatten(),
                     'action_indices': [action_to_idx[a] for a in actions[k : k + roll_ahead]],
-                    'value_targets':  [float(v) / scale for v in returns[k : k + roll_ahead]],
+                    'value_targets': [mc_returns[k + j] for j in range(roll_ahead)],
                     'policy_targets': p_arrays,
                     'reward_targets': [float(r) / scale for r in rewards[k : k + roll_ahead]],
                 })

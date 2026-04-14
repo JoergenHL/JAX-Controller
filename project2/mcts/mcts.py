@@ -65,6 +65,11 @@ class MCTS:
             policy: Dict {action: visit_count} — training target for NNp
             value:  Root value estimate
         """
+        # Reset Q-value bounds for this search (MuZero Appendix B, Eq. 5).
+        # These are updated during backprop and used to normalize Q in PUCT.
+        self._q_min = float('inf')
+        self._q_max = float('-inf')
+
         # atleast_2d: scalar state → [1,1]; flat array (e.g. 16-cell board) → [1, state_dim]
         sigma = _net_fwd(self.nn_r, jnp.atleast_2d(jnp.array(real_state, dtype=jnp.float32)))
         root  = Node(sigma)
@@ -105,20 +110,25 @@ class MCTS:
         # Step 3: randomly pick one child as the rollout starting point
         nc = node.children[random.choice(list(node.children.keys()))]
 
-        # Step 4: rollout — d_max NNd steps from Nc, actions sampled from NNp
+        # Step 4: rollout — d_max NNd steps from Nc, actions sampled from NNp.
+        # Accumulate predicted rewards from each NNd call (MuZero Appendix B, Eq. 3).
+        # These are summed into G alongside the leaf value estimate from NNp.
+        rollout_G = 0.0
         sigma = nc.state                                  # [1, abstract_dim]
         for _ in range(self.d_max):
-            nnp_out = _net_fwd(self.nn_p, sigma)[0]       # [value, logit_L, logit_R]
+            nnp_out = _net_fwd(self.nn_p, sigma)[0]       # [value, logit_L, ...]
             probs   = np.array(jax.nn.softmax(nnp_out[1:]))
             a_idx   = int(np.random.choice(len(self.action_space), p=probs))
             onehot  = jnp.eye(len(self.action_space))[a_idx : a_idx + 1]
-            sigma   = _net_fwd(self.nn_d,
-                               jnp.concatenate([sigma, onehot], axis=1))[:, :sigma.shape[1]]
+            nnd_out = _net_fwd(self.nn_d, jnp.concatenate([sigma, onehot], axis=1))
+            rollout_G += float(nnd_out[0, -1])            # NNd predicted reward
+            sigma   = nnd_out[:, :sigma.shape[1]]         # next abstract state
 
-        # Step 5: evaluate rollout endpoint with NNp
-        vm = float(_net_fwd(self.nn_p, sigma)[0, 0])
+        # Step 5: evaluate rollout endpoint with NNp; combine with accumulated rewards
+        vm = rollout_G + float(_net_fwd(self.nn_p, sigma)[0, 0])
 
-        # Step 6: backpropagate vm from Nc through the tree to root
+        # Step 6: backpropagate G from Nc through the tree to root.
+        # Each ancestor adds its own predicted_reward as G ascends (Eq. 3-4).
         self._backpropogation(nc, vm)
 
     def _select(self, node):
@@ -134,13 +144,23 @@ class MCTS:
         best_score  = -math.inf
         best_action = None
 
+        # Q-value normalization (MuZero Appendix B, Eq. 5).
+        # Without this, raw Q differences (0 to 50+ for 2048 log₂ rewards) dwarf
+        # the PUCT bonus U = c·P·√N_parent/(1+N), making PUCT degenerate to argmax(Q).
+        # Normalizing to [0,1] keeps the exploration bonus meaningful regardless of scale.
+        q_range = self._q_max - self._q_min
+
         for action, stats in node.action_stats.items():
             Q = stats["Q"]
+            if q_range > 0:
+                Q_norm = (Q - self._q_min) / q_range
+            else:
+                Q_norm = 0.0   # all Q equal → let exploration bonus U dominate
             p = stats["policy_prior"]
             N = stats["N"]
             U = self.c * p * math.sqrt(node.visits) / (1 + N)
-            if Q + U > best_score:
-                best_score  = Q + U
+            if Q_norm + U > best_score:
+                best_score  = Q_norm + U
                 best_action = action
 
         return node.children[best_action]
@@ -190,8 +210,10 @@ class MCTS:
         nnd_output = _net_fwd(self.nn_d, nnd_input)     # [num_actions, abstract_dim + 1]
 
         for action_idx, action in enumerate(self.action_space):
-            next_sigma = nnd_output[action_idx : action_idx + 1, :abstract_dim]
-            child = Node(next_sigma, parent=node, parent_action=action)
+            next_sigma       = nnd_output[action_idx : action_idx + 1, :abstract_dim]
+            predicted_reward = float(nnd_output[action_idx, -1])
+            child = Node(next_sigma, parent=node, parent_action=action,
+                         predicted_reward=predicted_reward)
             node.add_child(action, child)
             node.action_stats[action]["policy_prior"] = float(policy_probs[action_idx])
 
@@ -199,11 +221,22 @@ class MCTS:
         """Estimate the value of an abstract leaf state using NNp."""
         return float(_net_fwd(self.nn_p, node.state)[0, 0])
 
-    def _backpropogation(self, node, value):
-        """Back up value through all ancestors to the root."""
+    def _backpropogation(self, node, G):
+        """Back up accumulated return G through all ancestors to the root.
+
+        G starts as the rollout estimate at Nc and gains each node's predicted_reward
+        as it ascends (MuZero Appendix B, Eq. 3-4):
+            G_k = r_{k+1} + G_{k+1}
+        So ancestors closer to the root accumulate more predicted rewards in their G.
+        Q bounds are updated after each write to keep normalization current.
+        """
         while node is not None:
             if node.parent_action is not None:
-                node.parent.update(node.parent_action, value)
+                G = node.predicted_reward + G   # prepend this node's predicted reward
+                node.parent.update(node.parent_action, G)
+                new_Q = node.parent.action_stats[node.parent_action]["Q"]
+                self._q_min = min(self._q_min, new_Q)
+                self._q_max = max(self._q_max, new_Q)
             node = node.parent
 
     def _best_action(self, root):

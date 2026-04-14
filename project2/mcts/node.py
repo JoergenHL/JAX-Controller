@@ -1,10 +1,13 @@
 
 
 class Node:
-    def __init__(self, state, parent=None, parent_action=None):
+    def __init__(self, state, parent=None, parent_action=None, predicted_reward=0.0):
         self.state = state
         self.parent = parent
         self.parent_action = parent_action
+        # Immediate reward predicted by NNd for the action that led to this node.
+        # Used in backup to accumulate G = r + G (paper Appendix B, Eq. 3).
+        self.predicted_reward = predicted_reward
 
         self.children = {}
 

@@ -85,7 +85,7 @@ def collect_episode_worker(args: dict) -> dict:
     mcts.d_max           = cfg["d_max"]
 
     # ── Episode loop (mirrors rlm.collect_episode) ─────────────────────────────
-    states, actions, rewards, policies = [], [], [], []
+    states, actions, rewards, policies, mcts_values = [], [], [], [], []
     state     = game.initial_state()
     max_steps = args["max_steps"]
     steps     = 0
@@ -94,7 +94,8 @@ def collect_episode_worker(args: dict) -> dict:
         states.append(np.asarray(state, dtype=np.float32))
         steps += 1
 
-        _, policy, _ = mcts.search(state)
+        _, policy, mcts_val = mcts.search(state)
+        mcts_values.append(float(mcts_val))
 
         # Sample action from visit-count distribution (AlphaZero convention)
         total  = sum(policy.values()) or 1
@@ -113,18 +114,12 @@ def collect_episode_worker(args: dict) -> dict:
 
         state = next_state
 
-    # G_t = r_t + r_{t+1} + … + r_T  (gamma=1, no discounting)
-    returns, G = [], 0.0
-    for r in reversed(rewards):
-        G += r
-        returns.insert(0, G)
-
     return {
         "states":   states,
         "actions":  actions,
         "rewards":  rewards,
         "policies": policies,
-        "returns":  returns,
+        "values":   mcts_values,
     }
 
 
