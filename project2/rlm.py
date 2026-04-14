@@ -300,6 +300,60 @@ class ReinforcementLearningManager:
             learning_rate=config.nn["learning_rate"],
         )
 
+    # ── Policy data sampling ───────────────────────────────────────────────────
+
+    def sample_policy_data(self, num_games: int = 20) -> dict:
+        """Play num_games greedy games and collect per-step policy/value data.
+
+        No MCTS — NNr+NNp forward passes only. Fast (<1s for 20 games).
+        Intended for post-training policy analysis visualizations, not during
+        the training loop.
+
+        Returns a dict with numpy arrays of shape [N, ...]:
+            action_space: list of action strings (from game)
+            probs:        softmax action probabilities  [N, num_actions]
+            values:       NNp value estimates           [N]
+            max_tiles:    game.max_tile() at each step  [N]
+        """
+        from flax import nnx
+        import jax
+        _net_fwd = nnx.jit(lambda model, x: model(x))
+
+        nn_r         = self.nnm.get_net("nnr")
+        nn_p         = self.nnm.get_net("nnp")
+        action_space = self.gsm.action_space
+
+        all_probs     = []
+        all_values    = []
+        all_max_tiles = []
+
+        for _ in range(num_games):
+            state = self.gsm.initial_state()
+            steps = 0
+            while not self.gsm.is_terminal(state) and steps < 500:
+                sigma  = _net_fwd(nn_r, jnp.atleast_2d(
+                    jnp.array(state, dtype=jnp.float32)
+                ))
+                output = _net_fwd(nn_p, sigma)[0]
+
+                value = float(output[0])
+                probs = np.array(jax.nn.softmax(output[1:]))
+
+                all_values.append(value)
+                all_probs.append(probs)
+                all_max_tiles.append(self.gsm.max_tile(state))
+
+                action = action_space[int(jnp.argmax(output[1:]))]
+                state  = self.gsm.next_state(state, action)
+                steps += 1
+
+        return {
+            "action_space": action_space,
+            "probs":        np.array(all_probs,     dtype=np.float32),
+            "values":       np.array(all_values,    dtype=np.float32),
+            "max_tiles":    np.array(all_max_tiles, dtype=np.float32),
+        }
+
     # ── Evaluation ─────────────────────────────────────────────────────────────
 
     def evaluate(self, num_games=10, pool=None):

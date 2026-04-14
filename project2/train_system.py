@@ -7,7 +7,7 @@ from nn.NNManager import NNManager
 from rlm import ReinforcementLearningManager
 from baseline import RandomBaseline
 from run_logger import RunLogger
-from visualize import plot_training, replay_game
+from visualize import plot_training, plot_policy_analysis, replay_game
 
 # ── Guard required for multiprocessing spawn mode ──────────────────────────────
 # With spawn (macOS/Windows default), worker processes re-import this file to
@@ -95,6 +95,17 @@ if __name__ == "__main__":
         baseline=baseline_scores,
         mcts_eval=mcts_scores,
     )
+
+    # ── Policy analysis ────────────────────────────────────────────────────────
+    if config.viz.get("show_policy_analysis", False):
+        policy_data = rlm.sample_policy_data(
+            num_games=config.viz.get("policy_analysis_games", 20)
+        )
+        plot_policy_analysis(
+            policy_data,
+            game_name=game.__class__.__name__,
+            save_path=json_path.replace(".json", "_policy.png"),
+        )
 
     # ── Game replay ───────────────────────────────────────────────────────────
     if config.viz.get("replay_after_training", False):

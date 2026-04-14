@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import random
 
@@ -37,9 +38,10 @@ class TwentyFortyEight:
         self.num_actions   = 4
         self.win_tile_log2 = 11.0   # log2(2048) — effectively unreachable
         # Divide reward/value targets by this in rlm._train_networks to keep
-        # loss magnitudes comparable across games (LineWorld rewards are ±1;
-        # 2048 rewards can be 16+ per merge, returns hundreds over a game).
-        self.reward_scale  = 128.0  # scale down returns (typically 100-500) to ~1-4
+        # loss magnitudes comparable. Reward is now log2(merge_score) per step
+        # (~2–11 per productive move). A full game has 50–150 productive merges
+        # → total return ~150–600. Dividing by 32 keeps value targets in ~5–20.
+        self.reward_scale  = 32.0
 
     # ── Core GSM interface ─────────────────────────────────────────────────────
 
@@ -58,26 +60,27 @@ class TwentyFortyEight:
 
     def next_state(self, state, action):
         """Apply action: slide/merge, then spawn one new tile."""
-        new_state, _ = self._apply_move(state, action)
+        new_state, _, _ = self._apply_move(state, action)
         return self._spawn_tile(new_state)
 
     def reward(self, state, action, next_state):
-        """Reward = current max tile value, but ONLY if the max tile advances.
+        """Reward = log₂(total merge score) for this move.
 
-        The max tile advances when two tiles equal to the current maximum merge.
-        Example: board max = 16 (log2=4), two 16s merge → 32 (log2=5): reward = 16.
-        Example: board max = 16, two 8s merge → 16: reward = 0 (max unchanged).
+        Every merge contributes to the score: two tiles of value v merging into
+        2v add 2v to the merge score. Taking log₂ normalises across the
+        exponentially growing tile values:
+            2+2→4:   merge_score=4,    reward=2
+            8+8→16:  merge_score=16,   reward=4
+            64+64→128: merge_score=128, reward=7
 
-        This incentivises the agent to build up and merge its largest tile
-        rather than farming small merges.
+        Dense reward (fires on every merge, ~100–200 times per game) vs. the
+        previous max-tile-only reward (~8–10 times per game), giving the agent
+        a clear, graded signal for making good vs. wasted moves.
         """
-        _, max_merged_log2 = self._apply_move(state, action)
-        if max_merged_log2 == 0:
+        _, _, merge_score = self._apply_move(state, action)
+        if merge_score == 0:
             return 0.0
-        current_max = float(np.max(state))
-        if max_merged_log2 != current_max + 1:
-            return 0.0
-        return float(2 ** (max_merged_log2 - 1))
+        return math.log2(merge_score)
 
     def is_terminal(self, state):
         """No valid moves remain: board is full and no adjacent equal tiles."""
@@ -130,18 +133,22 @@ class TwentyFortyEight:
         Only one merge per pair per move (a merged cell cannot merge again).
 
         Returns:
-            (new_row, max_merged_log2)
+            (new_row, max_merged_log2, merge_score)
             max_merged_log2 = log2 value of the largest tile created by merging,
                               or 0 if no merge occurred.
+            merge_score     = sum of actual tile values created by all merges
+                              (standard 2048 scoring), 0 if no merges.
         """
         tiles = [t for t in row if t != 0]
         result = []
-        max_merged = 0
+        max_merged  = 0
+        merge_score = 0
         i = 0
         while i < len(tiles):
             if i + 1 < len(tiles) and tiles[i] == tiles[i + 1]:
                 new_val = tiles[i] + 1   # log2: merge doubles the tile
                 result.append(new_val)
+                merge_score += int(2 ** new_val)   # actual value of merged tile
                 if new_val > max_merged:
                     max_merged = new_val
                 i += 2
@@ -149,55 +156,61 @@ class TwentyFortyEight:
                 result.append(tiles[i])
                 i += 1
         result += [0] * (4 - len(result))
-        return result, max_merged
+        return result, max_merged, merge_score
 
     def _apply_move(self, state, action):
         """Slide and merge the board for the given action. Does NOT spawn a tile.
 
         Returns:
-            (new_flat_state, max_merged_log2)
+            (new_flat_state, max_merged_log2, total_score)
+            total_score = sum of all merged tile values this move (standard 2048 score).
         """
         board = state.reshape(4, 4)
-        max_merged = 0
+        max_merged  = 0
+        total_score = 0
 
         if action == "LEFT":
             rows = []
             for row in board:
-                new_row, m = self._slide_row_left(row.tolist())
+                new_row, m, s = self._slide_row_left(row.tolist())
                 rows.append(new_row)
-                max_merged = max(max_merged, m)
+                max_merged  = max(max_merged, m)
+                total_score += s
             new_board = np.array(rows, dtype=np.float32)
 
         elif action == "RIGHT":
             rows = []
             for row in board:
-                new_row, m = self._slide_row_left(row[::-1].tolist())
+                new_row, m, s = self._slide_row_left(row[::-1].tolist())
                 rows.append(new_row[::-1])
-                max_merged = max(max_merged, m)
+                max_merged  = max(max_merged, m)
+                total_score += s
             new_board = np.array(rows, dtype=np.float32)
 
         elif action == "UP":
             cols = []
             for col in board.T:
-                new_col, m = self._slide_row_left(col.tolist())
+                new_col, m, s = self._slide_row_left(col.tolist())
                 cols.append(new_col)
-                max_merged = max(max_merged, m)
+                max_merged  = max(max_merged, m)
+                total_score += s
             new_board = np.array(cols, dtype=np.float32).T
 
         elif action == "DOWN":
             cols = []
             for col in board.T:
-                new_col, m = self._slide_row_left(col[::-1].tolist())
+                new_col, m, s = self._slide_row_left(col[::-1].tolist())
                 cols.append(new_col[::-1])
-                max_merged = max(max_merged, m)
+                max_merged  = max(max_merged, m)
+                total_score += s
             new_board = np.array(cols, dtype=np.float32).T
 
         else:
             raise ValueError(f"Unknown action: {action}")
 
-        return new_board.flatten(), max_merged
+        return new_board.flatten(), max_merged, total_score
 
     def _action_changes_board(self, state, action):
         """True if applying action produces a different board (move is valid)."""
-        new_state, _ = self._apply_move(state, action)
+        new_state, _, _ = self._apply_move(state, action)
         return not np.array_equal(state, new_state)

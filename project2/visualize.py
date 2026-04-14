@@ -169,6 +169,108 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
         plt.show()
 
 
+# ── Policy analysis ───────────────────────────────────────────────────────────
+
+def plot_policy_analysis(data: dict, game_name: str, save_path: str = None):
+    """3-panel figure showing what the agent has learned from its greedy policy.
+
+    Uses data collected by rlm.sample_policy_data() — no MCTS, no training impact.
+
+    Panels:
+      1. Action preference bar chart — fraction of states where each action is chosen.
+         Dashed reference line at 1/num_actions (uniform / untrained baseline).
+         A trained 2048 agent should strongly prefer 1-2 corner directions.
+
+      2. Policy entropy histogram — H(π) = −Σ p_i log(p_i) per state.
+         Vertical dashed line marks ln(num_actions) = entropy of uniform distribution.
+         Trained agents: mass shifted left (confident, low entropy).
+         Untrained agents: spike near the dashed line (uniform outputs).
+
+      3. Value estimate vs. board quality scatter.
+         X-axis = max tile (game.max_tile) at the sampled state.
+         Y-axis = NNp value output (raw, in units of reward_scale * return).
+         A trained value head should show a positive slope; untrained = flat scatter.
+         Regression line overlaid in red.
+
+    Args:
+        data:      dict from rlm.sample_policy_data() — keys: action_space, probs,
+                   values, max_tiles
+        game_name: string label for the figure title
+        save_path: file path to save PNG; show interactively if None
+    """
+    action_space = data["action_space"]
+    probs        = data["probs"]        # [N, num_actions]
+    values       = data["values"]       # [N]
+    max_tiles    = data["max_tiles"]    # [N]
+
+    num_actions = len(action_space)
+    N           = len(values)
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    # ── Panel 1: Action preference ────────────────────────────────────────────
+    ax = axes[0]
+    chosen = np.argmax(probs, axis=1)                  # index of preferred action
+    fracs  = [np.mean(chosen == i) for i in range(num_actions)]
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    ax.barh(action_space, fracs, color=colors[:num_actions])
+    ax.axvline(1.0 / num_actions, color="gray", linestyle="--", linewidth=1.0,
+               label=f"uniform (1/{num_actions})")
+    ax.set_xlabel("Fraction of states")
+    ax.set_title("Action preference")
+    ax.set_xlim(0, 1)
+    ax.legend(fontsize=8)
+
+    # ── Panel 2: Policy entropy histogram ─────────────────────────────────────
+    ax = axes[1]
+    entropy     = -np.sum(probs * np.log(probs + 1e-9), axis=1)
+    uniform_H   = np.log(num_actions)
+
+    ax.hist(entropy, bins=30, color="tab:blue", edgecolor="white", linewidth=0.4)
+    ax.axvline(uniform_H, color="red", linestyle="--", linewidth=1.2,
+               label=f"uniform H = {uniform_H:.2f}")
+    ax.set_xlabel("Policy entropy H(π)")
+    ax.set_ylabel("Count")
+    ax.set_title("Policy entropy distribution")
+    ax.legend(fontsize=8)
+
+    mean_H = float(np.mean(entropy))
+    ax.text(0.97, 0.95, f"mean H = {mean_H:.3f}", ha="right", va="top",
+            transform=ax.transAxes, fontsize=8, color="navy")
+
+    # ── Panel 3: Value vs. board quality ──────────────────────────────────────
+    ax = axes[2]
+
+    # Jitter x slightly to avoid overplotting on discrete tile values
+    x = max_tiles + np.random.uniform(-0.2, 0.2, size=len(max_tiles))
+    ax.scatter(x, values, alpha=0.15, s=6, color="tab:green")
+
+    # Regression line — fit on original (non-jittered) x
+    if len(np.unique(max_tiles)) > 1:
+        coeffs = np.polyfit(max_tiles, values, 1)
+        x_line = np.linspace(max_tiles.min(), max_tiles.max(), 100)
+        ax.plot(x_line, np.polyval(coeffs, x_line),
+                color="red", linewidth=1.5,
+                label=f"slope = {coeffs[0]:.3f}")
+        ax.legend(fontsize=8)
+
+    ax.set_xlabel("Max tile on board")
+    ax.set_ylabel("NNp value estimate")
+    ax.set_title("Value vs. board quality")
+
+    # ── Figure title ──────────────────────────────────────────────────────────
+    fig.suptitle(f"{game_name} — policy analysis  (N={N} states)", fontsize=10)
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"  Policy plot saved → {save_path}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+
 # ── Game replay ────────────────────────────────────────────────────────────────
 
 def replay_game(rlm, max_steps: int = 50):

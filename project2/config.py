@@ -12,7 +12,7 @@
 # To swap games, change the game import in train_system.py — nothing else.
 
 mcts = {
-    "num_simulations": 10,   # Simulations per move
+    "num_simulations": 50,   # Simulations per move
     "c": 2,                  # Exploration constant in PUCT formula
     "d_max": 1,              # Rollout depth: NNd steps from the randomly-picked child Nc
     "dir_alpha":   0.3,      # Dirichlet concentration for root exploration noise
@@ -34,7 +34,7 @@ nn = {
 }
 
 training = {
-    "num_iterations":    3,
+    "num_iterations":    10,
     "episodes_per_iter": 3,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
@@ -53,8 +53,8 @@ viz = {
     # eval_every: evaluate the model every N training iterations.
     # Each checkpoint plays eval_games greedy NNr+NNp games — fast, matches
     # deployment. Set eval_every=0 to skip entirely.
-    "eval_every":  2,       # 0 = off; N = evaluate after every N-th iteration
-    "eval_games":  5,       # games per checkpoint
+    "eval_every":  1,       # 0 = off; N = evaluate after every N-th iteration
+    "eval_games":  3,       # games per checkpoint
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
@@ -69,6 +69,15 @@ viz = {
     # compare_mcts: run full MCTS eval (NNr+NNd+NNp) once after training.
     # Shows how much planning adds on top of the greedy NNr+NNp policy.
     # Slow (100 sims/step) — keep mcts_eval_games small.
-    "compare_mcts":     True,
-    "mcts_eval_games":  1,
+    "compare_mcts":     False,
+    "mcts_eval_games":  10,
+
+    # show_policy_analysis: after training, sample greedy games and plot three
+    # diagnostics of the learned policy (no MCTS, <1s).
+    #   Panel 1 — action preference bar chart (which directions are chosen most?)
+    #   Panel 2 — policy entropy histogram (confident policy vs. uniform/untrained)
+    #   Panel 3 — value estimate vs. board quality scatter (has value learned?)
+    # Saved as <run_name>_policy.png alongside the training plot.
+    "show_policy_analysis":  True,
+    "policy_analysis_games": 20,   # greedy games to sample (~200 steps each)
 }
