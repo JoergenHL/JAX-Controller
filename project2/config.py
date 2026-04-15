@@ -23,7 +23,7 @@ nn = {
     # abstract_dim: width of the latent state vector (shared across NNr/NNp/NNd).
     # nnr/nnp/nnd_hidden: hidden layer widths — change to adjust depth and width.
     #   e.g. "nnr_hidden": [128, 64]  gives a two-hidden-layer NNr.
-    "abstract_dim": 16,
+    "abstract_dim": 32,
     "nnr_hidden":   [128, 128, 128],
     "nnp_hidden":   [128, 128, 128],
     "nnd_hidden":   [128, 128, 128],    
@@ -34,7 +34,7 @@ nn = {
 }
 
 training = {
-    "num_iterations":    100,
+    "num_iterations":    50,
     "episodes_per_iter": 9,
     "epochs_per_iter":   100,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
@@ -47,6 +47,11 @@ training = {
     # Uses MCTS value estimate v_{k+n} to cap variance at n steps instead
     # of summing 200-400 stochastic rewards to end of game.
     "n_step":            10,
+    # Discount factor for Monte Carlo returns.
+    # γ=0.99 means a reward 200 steps away is worth 0.99^200 ≈ 0.13 now.
+    # This reduces variance from distant stochastic tile spawns without
+    # the feedback-loop instability of n-step bootstrap.
+    "gamma":             0.99,
     # Parallel episode collectors. Each worker is a separate process with its
     # own JAX instance and a copy of the current network weights.
     # Set to 1 to disable parallelism (sequential, easier to debug).
@@ -59,7 +64,7 @@ viz = {
     # Each checkpoint plays eval_games greedy NNr+NNp games — fast, matches
     # deployment. Set eval_every=0 to skip entirely.
     "eval_every":  1,       # 0 = off; N = evaluate after every N-th iteration
-    "eval_games":  3,       # games per checkpoint
+    "eval_games":  5,       # games per checkpoint
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
@@ -69,7 +74,7 @@ viz = {
     # compare_baseline: run a random agent after training and overlay its scores
     # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.
     "compare_baseline": True,
-    "baseline_games":   10,     # more games = more stable estimate
+    "baseline_games":   100,     # more games = more stable estimate
 
     # compare_mcts: run full MCTS eval (NNr+NNd+NNp) once after training.
     # Shows how much planning adds on top of the greedy NNr+NNp policy.

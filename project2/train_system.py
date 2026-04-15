@@ -51,7 +51,7 @@ if __name__ == "__main__":
     result = rlm.train()
 
     # ── Final evaluation ───────────────────────────────────────────────────────
-    pct, avg_tile, tiles = rlm.evaluate(num_games=10)
+    pct, avg_tile, tiles = rlm.evaluate(num_games=100)
 
     # ── Logging & plotting ─────────────────────────────────────────────────────
     network_dims = {"nnr": nnr_dims, "nnp": nnp_dims, "nnd": nnd_dims}

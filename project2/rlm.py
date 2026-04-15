@@ -257,7 +257,7 @@ class ReinforcementLearningManager:
         action_order  = self.gsm.action_space
         action_to_idx = {a: i for i, a in enumerate(action_order)}
         roll_ahead    = config.training["roll_ahead"]
-        n_step        = config.training.get("n_step", 10)
+        gamma         = config.training.get("gamma", 1.0)
 
         # Normalize reward/value targets by a game-specific scale so that loss
         # magnitudes stay comparable regardless of reward range (e.g. 2048
@@ -284,7 +284,7 @@ class ReinforcementLearningManager:
             mc_returns = []
             G = 0.0
             for r in reversed(rewards):
-                G += r
+                G = r + gamma * G
                 mc_returns.insert(0, G / scale)
             
 
@@ -438,7 +438,7 @@ class ReinforcementLearningManager:
         print(f"  Tiles: {max_tiles}  avg={avg_tile:.0f}  best={best}")
         return pct, avg_tile, max_tiles
 
-    def evaluate_mcts(self, num_games=5):
+    def evaluate_mcts(self, num_games=100):
         """Play num_games using the current MCTS+network policy (NNr+NNd+NNp).
 
         Slower than evaluate() — use for an upper-bound comparison of how

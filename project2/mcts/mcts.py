@@ -65,11 +65,6 @@ class MCTS:
             policy: Dict {action: visit_count} — training target for NNp
             value:  Root value estimate
         """
-        # Reset Q-value bounds for this search (MuZero Appendix B, Eq. 5).
-        # These are updated during backprop and used to normalize Q in PUCT.
-        self._q_min = float('inf')
-        self._q_max = float('-inf')
-
         # atleast_2d: scalar state → [1,1]; flat array (e.g. 16-cell board) → [1, state_dim]
         sigma = _net_fwd(self.nn_r, jnp.atleast_2d(jnp.array(real_state, dtype=jnp.float32)))
         root  = Node(sigma)
@@ -144,23 +139,19 @@ class MCTS:
         best_score  = -math.inf
         best_action = None
 
-        # Q-value normalization (MuZero Appendix B, Eq. 5).
-        # Without this, raw Q differences (0 to 50+ for 2048 log₂ rewards) dwarf
-        # the PUCT bonus U = c·P·√N_parent/(1+N), making PUCT degenerate to argmax(Q).
-        # Normalizing to [0,1] keeps the exploration bonus meaningful regardless of scale.
-        q_range = self._q_max - self._q_min
-
+        # Raw Q values — no normalization.
+        # With MC returns divided by scale=32, Q values are already in the 0–2 range.
+        # The PUCT bonus U = c·P·√N_parent/(1+N) with c=2 is ~0.5–1.0, already
+        # meaningful relative to Q differences. Normalization is not needed here and
+        # causes a degenerate feedback loop: when q_range ≈ 0 (all actions similar),
+        # Q_norm=0 for all → PUCT=U only → near-uniform visits → policy trains uniform.
         for action, stats in node.action_stats.items():
             Q = stats["Q"]
-            if q_range > 0:
-                Q_norm = (Q - self._q_min) / q_range
-            else:
-                Q_norm = 0.0   # all Q equal → let exploration bonus U dominate
             p = stats["policy_prior"]
             N = stats["N"]
             U = self.c * p * math.sqrt(node.visits) / (1 + N)
-            if Q_norm + U > best_score:
-                best_score  = Q_norm + U
+            if Q + U > best_score:
+                best_score  = Q + U
                 best_action = action
 
         return node.children[best_action]
@@ -228,15 +219,11 @@ class MCTS:
         as it ascends (MuZero Appendix B, Eq. 3-4):
             G_k = r_{k+1} + G_{k+1}
         So ancestors closer to the root accumulate more predicted rewards in their G.
-        Q bounds are updated after each write to keep normalization current.
         """
         while node is not None:
             if node.parent_action is not None:
                 G = node.predicted_reward + G   # prepend this node's predicted reward
                 node.parent.update(node.parent_action, G)
-                new_Q = node.parent.action_stats[node.parent_action]["Q"]
-                self._q_min = min(self._q_min, new_Q)
-                self._q_max = max(self._q_max, new_Q)
             node = node.parent
 
     def _best_action(self, root):
