@@ -25,9 +25,11 @@ def _get_game(name: str):
     if _GAME_REGISTRY is None:
         from game.TwentyFortyEight import TwentyFortyEight
         from game.LineWorld import LineWorld
+        from game.CartPole import CartPole
         _GAME_REGISTRY = {
             "TwentyFortyEight": TwentyFortyEight,
             "LineWorld":        LineWorld,
+            "CartPole":         CartPole,
         }
     if name not in _GAME_REGISTRY:
         raise ValueError(
@@ -162,8 +164,8 @@ def evaluate_greedy_worker(args: dict) -> dict:
     nn_p = nnm.get_net("nnp")
     action_space = game.action_space
 
-    wins      = 0
-    max_tiles = []
+    wins   = 0
+    scores = []
 
     for _ in range(args["num_games"]):
         state    = game.initial_state()
@@ -176,8 +178,7 @@ def evaluate_greedy_worker(args: dict) -> dict:
             ))
             output = _net_fwd(nn_p, sigma)[0]
             # output[0] = value; output[1:] = action logits.
-            # Mask illegal actions (those that don't change the board) to -inf
-            # so argmax always picks a move that makes progress.
+            # Mask illegal actions to -inf so argmax always picks a legal move.
             legal = game.legal_actions(state)
             logits = output[1:]
             masked = [float(logits[i]) if action_space[i] in legal else float('-inf')
@@ -188,6 +189,6 @@ def evaluate_greedy_worker(args: dict) -> dict:
 
         if game.is_win(state):
             wins += 1
-        max_tiles.append(int(game.max_tile(state)))
+        scores.append(game.eval_score(steps, state))
 
-    return {"wins": wins, "max_tiles": max_tiles}
+    return {"wins": wins, "scores": scores}

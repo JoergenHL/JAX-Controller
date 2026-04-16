@@ -12,7 +12,8 @@ import numpy as np
 # ── Loss + eval plot ───────────────────────────────────────────────────────────
 
 def plot_training(result: dict, game_name: str, network_dims: dict,
-                  save_path: str = None, baseline=None, mcts_eval=None):
+                  save_path: str = None, baseline=None, mcts_eval=None,
+                  score_label: str = "Score"):
     """Save a 3-panel training summary figure.
 
     Panels:
@@ -82,7 +83,7 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
             iters   = [e[0] for e in eval_scores]
             avgs    = [e[2] for e in eval_scores]
             bests   = [max(e[3]) for e in eval_scores]
-            all_pts = [(e[0], t) for e in eval_scores for t in e[3]]
+            all_pts = [(e[0], s) for e in eval_scores for s in e[3]]
 
             xs, ys = zip(*all_pts) if all_pts else ([], [])
             ax.scatter(xs, ys, color="tab:blue", alpha=0.4, s=20, label="per-game")
@@ -118,8 +119,8 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
                        label=f"MCTS avg ({m_avg:.0f})")
 
         ax.set_xlabel("Iteration")
-        ax.set_ylabel("Max tile")
-        ax.set_title("Eval: max tile per game")
+        ax.set_ylabel(score_label)
+        ax.set_title(f"Eval: {score_label.lower()} per game")
         ax.legend(fontsize=8)
 
     # ── Panel 3: Loss breakdown per iteration ─────────────────────────────────
@@ -171,7 +172,8 @@ def plot_training(result: dict, game_name: str, network_dims: dict,
 
 # ── Policy analysis ───────────────────────────────────────────────────────────
 
-def plot_policy_analysis(data: dict, game_name: str, save_path: str = None):
+def plot_policy_analysis(data: dict, game_name: str, save_path: str = None,
+                         score_label: str = "Score"):
     """3-panel figure showing what the agent has learned from its greedy policy.
 
     Uses data collected by rlm.sample_policy_data() — no MCTS, no training impact.
@@ -201,7 +203,7 @@ def plot_policy_analysis(data: dict, game_name: str, save_path: str = None):
     action_space = data["action_space"]
     probs        = data["probs"]        # [N, num_actions]
     values       = data["values"]       # [N]
-    max_tiles    = data["max_tiles"]    # [N]
+    max_tiles    = data["scores"]       # [N] — generic eval score per step
 
     num_actions = len(action_space)
     N           = len(values)
@@ -255,7 +257,7 @@ def plot_policy_analysis(data: dict, game_name: str, save_path: str = None):
                 label=f"slope = {coeffs[0]:.3f}")
         ax.legend(fontsize=8)
 
-    ax.set_xlabel("Max tile on board")
+    ax.set_xlabel(score_label)
     ax.set_ylabel("NNp value estimate")
     ax.set_title("Value vs. board quality")
 

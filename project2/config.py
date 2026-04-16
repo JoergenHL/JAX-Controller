@@ -9,7 +9,14 @@
 #   NNd full dims: [abstract_dim+num_actions] + nnd_hidden + [abstract_dim + 1]
 #
 # To change network depth/width, edit the hidden lists below (e.g. [128, 64]).
-# To swap games, change the game import in train_system.py — nothing else.
+# To swap games, change game["name"] below — no other file needs to be touched.
+
+# ── Game selection ─────────────────────────────────────────────────────────────
+# name: class name string — must match an entry in worker.py's _GAME_REGISTRY.
+# Available: "TwentyFortyEight", "CartPole", "LineWorld"
+game = {
+    "name": "CartPole",
+}
 
 mcts = {
     "num_simulations": 50,   # Simulations per move

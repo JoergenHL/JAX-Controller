@@ -7,6 +7,7 @@ class LineWorld:
         self.state_dim    = 1
         self.num_actions  = 2
         self.reward_scale = 1.0   # rewards are ±1; no scaling needed
+        self.score_label  = "Position"
     
 
     def initial_state(self):
@@ -49,6 +50,10 @@ class LineWorld:
     def max_tile(self, state):
         """Return the current position (used by evaluate for progress reporting)."""
         return int(state)
+
+    def eval_score(self, steps: int, final_state) -> int:
+        """Evaluation score for one episode: final position."""
+        return self.max_tile(final_state)
     
     def render(self, state):
             positions = list(range(-self.max_position, self.max_position + 1))

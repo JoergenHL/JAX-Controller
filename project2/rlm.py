@@ -363,7 +363,7 @@ class ReinforcementLearningManager:
 
                 all_values.append(value)
                 all_probs.append(probs)
-                all_max_tiles.append(self.gsm.max_tile(state))
+                all_max_tiles.append(self.gsm.eval_score(steps, state))
 
                 legal = self.gsm.legal_actions(state)
                 logits = np.array(output[1:])
@@ -376,7 +376,7 @@ class ReinforcementLearningManager:
             "action_space": action_space,
             "probs":        np.array(all_probs,     dtype=np.float32),
             "values":       np.array(all_values,    dtype=np.float32),
-            "max_tiles":    np.array(all_max_tiles, dtype=np.float32),
+            "scores":       np.array(all_max_tiles, dtype=np.float32),
         }
 
     # ── Evaluation ─────────────────────────────────────────────────────────────
@@ -389,14 +389,15 @@ class ReinforcementLearningManager:
         a temporary pool is created internally).
 
         Returns:
-            pct:       win rate (0–100)
-            avg_tile:  average max tile across all games
-            max_tiles: list of max tile per game (length = num_games)
+            pct:    win rate (0–100)
+            avg:    average eval_score across all games
+            scores: list of eval_score per game (length = num_games)
         """
         from worker import evaluate_greedy_worker
 
         num_workers = config.training.get("num_workers", 1)
         use_parallel = num_workers > 1
+        label = getattr(self.gsm, "score_label", "Score")
 
         print(f"\n  Evaluating greedy NNr+NNp ({num_games} games"
               f"{', parallel' if use_parallel else ''})...")
@@ -412,7 +413,6 @@ class ReinforcementLearningManager:
         }
 
         if use_parallel:
-            # Split games evenly across workers; last worker gets the remainder.
             games_per_worker = num_games // num_workers
             remainder        = num_games % num_workers
             splits = [games_per_worker + (1 if i < remainder else 0)
@@ -423,31 +423,30 @@ class ReinforcementLearningManager:
                 worker_args = [{**args, "num_games": n} for n in splits]
                 futures = [pool_obj.submit(evaluate_greedy_worker, a)
                            for a in worker_args]
-                wins      = 0
-                max_tiles = []
+                wins, scores = 0, []
                 for f in futures:
                     r = f.result()
-                    wins      += r["wins"]
-                    max_tiles += r["max_tiles"]
-                return wins, max_tiles
+                    wins   += r["wins"]
+                    scores += r["scores"]
+                return wins, scores
 
             if pool is not None:
-                wins, max_tiles = _run(pool)
+                wins, scores = _run(pool)
             else:
                 mp_ctx = multiprocessing.get_context("spawn")
                 with ProcessPoolExecutor(max_workers=num_workers,
                                          mp_context=mp_ctx) as tmp_pool:
-                    wins, max_tiles = _run(tmp_pool)
+                    wins, scores = _run(tmp_pool)
         else:
-            result   = evaluate_greedy_worker(args)
-            wins      = result["wins"]
-            max_tiles = result["max_tiles"]
+            result = evaluate_greedy_worker(args)
+            wins   = result["wins"]
+            scores = result["scores"]
 
-        pct      = 100 * wins / num_games
-        avg_tile = sum(max_tiles) / len(max_tiles)
-        best     = max(max_tiles)
-        print(f"  Tiles: {max_tiles}  avg={avg_tile:.0f}  best={best}")
-        return pct, avg_tile, max_tiles
+        pct  = 100 * wins / num_games
+        avg  = sum(scores) / len(scores)
+        best = max(scores)
+        print(f"  {label}: {scores}  avg={avg:.0f}  best={best}")
+        return pct, avg, scores
 
     def evaluate_mcts(self, num_games=100):
         """Play num_games using the current MCTS+network policy (NNr+NNd+NNp).
@@ -456,13 +455,13 @@ class ReinforcementLearningManager:
         much planning adds on top of the greedy policy.
 
         Returns:
-            pct:       win rate (0–100)
-            avg_tile:  average max tile across all games
-            max_tiles: list of max tile per game (length = num_games)
+            pct:    win rate (0–100)
+            avg:    average eval_score across all games
+            scores: list of eval_score per game (length = num_games)
         """
+        label = getattr(self.gsm, "score_label", "Score")
         print(f"\n  Evaluating MCTS ({num_games} games)...")
-        wins = 0
-        max_tiles = []
+        wins, scores = 0, []
         for _ in range(num_games):
             state = self.gsm.initial_state()
             steps = 0
@@ -472,9 +471,9 @@ class ReinforcementLearningManager:
                 steps += 1
             if self.gsm.is_win(state):
                 wins += 1
-            max_tiles.append(self.gsm.max_tile(state))
-        pct      = 100 * wins / num_games
-        avg_tile = sum(max_tiles) / len(max_tiles)
-        best     = max(max_tiles)
-        print(f"  Tiles: {max_tiles}  avg={avg_tile:.0f}  best={best}")
-        return pct, avg_tile, max_tiles
+            scores.append(self.gsm.eval_score(steps, state))
+        pct  = 100 * wins / num_games
+        avg  = sum(scores) / len(scores)
+        best = max(scores)
+        print(f"  {label}: {scores}  avg={avg:.0f}  best={best}")
+        return pct, avg, scores

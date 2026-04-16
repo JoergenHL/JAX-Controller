@@ -2,12 +2,12 @@
 """Stage 4B: u-MCTS — self-play with NNr + NNd + NNp, search in abstract space."""
 
 import config
-from game.TwentyFortyEight import TwentyFortyEight
 from nn.NNManager import NNManager
 from rlm import ReinforcementLearningManager
 from baseline import RandomBaseline
 from run_logger import RunLogger
 from visualize import plot_training, plot_policy_analysis, replay_game
+from worker import _get_game
 
 # ── Guard required for multiprocessing spawn mode ──────────────────────────────
 # With spawn (macOS/Windows default), worker processes re-import this file to
@@ -16,13 +16,10 @@ from visualize import plot_training, plot_policy_analysis, replay_game
 # All executable code must live inside this block.
 if __name__ == "__main__":
 
-    # ── Network setup ──────────────────────────────────────────────────────────
-    # Dimensions are derived from the game object + config hyperparameters.
-    # To swap games: change the import above and nothing else.
-    # To change network architecture: edit config.nn["nnr_hidden"] etc.
-
-    game = TwentyFortyEight()
-    s = game.state_dim    # input size for NNr  (1 for LineWorld, 16 for 2048)
+    # ── Game instantiation from config ─────────────────────────────────────────
+    # Change config.game["name"] to swap games — no other file needs touching.
+    game = _get_game(config.game["name"])
+    s = game.state_dim    # input size for NNr  (1 for LineWorld, 4 for CartPole, 16 for 2048)
     a = game.num_actions  # action count         (2 for LineWorld,  4 for 2048)
     d = config.nn["abstract_dim"]
 
@@ -50,6 +47,8 @@ if __name__ == "__main__":
     print("=" * 62)
 
     result = rlm.train()
+
+    score_label = getattr(game, "score_label", "Score")
 
     # ── Final evaluation ───────────────────────────────────────────────────────
     pct, avg_tile, tiles = rlm.evaluate(num_games=100)
@@ -95,6 +94,7 @@ if __name__ == "__main__":
         save_path=json_path.replace(".json", ".png"),
         baseline=baseline_scores,
         mcts_eval=mcts_scores,
+        score_label=score_label,
     )
 
     # ── Policy analysis ────────────────────────────────────────────────────────
@@ -106,6 +106,7 @@ if __name__ == "__main__":
             policy_data,
             game_name=game.__class__.__name__,
             save_path=json_path.replace(".json", "_policy.png"),
+            score_label=score_label,
         )
 
     # ── Game replay ───────────────────────────────────────────────────────────

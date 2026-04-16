@@ -15,21 +15,14 @@ import json
 import os
 import sys
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from game.LineWorld import LineWorld
-from game.TwentyFortyEight import TwentyFortyEight
 from nn.NNManager import NNManager
+from worker import _get_game
 import config
-
-# ── Game registry ──────────────────────────────────────────────────────────────
-# Add new games here when they are introduced.
-GAMES = {
-    "TwentyFortyEight": TwentyFortyEight,
-    "LineWorld":        LineWorld,
-}
 
 _net_fwd = nnx.jit(lambda model, x: model(x))
 
@@ -65,12 +58,7 @@ def load_model(pkl_path: str):
         run_data = json.load(f)
 
     game_name = run_data["game"]
-    if game_name not in GAMES:
-        raise ValueError(
-            f"Unknown game '{game_name}'. "
-            f"Add it to the GAMES registry in run_agent.py."
-        )
-    game = GAMES[game_name]()
+    game = _get_game(game_name)
 
     nnm = NNManager()
     nnm.load(pkl_path)
@@ -96,6 +84,7 @@ def play(game, nnm: NNManager, max_steps: int = None):
     nn_r = nnm.get_net("nnr")
     nn_p = nnm.get_net("nnp")
     action_space = game.action_space
+    score_label  = getattr(game, "score_label", "Score")
 
     state        = game.initial_state()
     total_reward = 0.0
@@ -117,24 +106,29 @@ def play(game, nnm: NNManager, max_steps: int = None):
 
         # NNp: σ → (value, policy logits)
         output = _net_fwd(nn_p, sigma)[0]    # shape [1 + num_actions]
-        # output[0] = value, output[1:] = policy logits
-        action_idx = int(jnp.argmax(output[1:]))
-        action     = action_space[action_idx]
+        # output[0] = value, output[1:] = policy logits; mask illegal actions
+        legal  = game.legal_actions(state)
+        logits = output[1:]
+        masked     = [float(logits[i]) if action_space[i] in legal else float('-inf')
+                      for i in range(len(action_space))]
+        action     = action_space[int(np.argmax(masked))]
 
         next_state   = game.next_state(state, action)
         reward       = game.reward(state, action, next_state)
         total_reward += reward
         steps        += 1
 
+        score = game.eval_score(steps, next_state)
         print(f"Step {steps:3d} | action={action:<6} | reward={reward:6.1f} "
-              f"| max tile={game.max_tile(next_state)}")
+              f"| {score_label}={score}")
         game.render(next_state)
 
         state = next_state
 
+    final_score = game.eval_score(steps, state)
     print(sep)
     print(f"  Episode ended  steps={steps}  total_reward={total_reward:.1f}"
-          f"  max_tile={game.max_tile(state)}")
+          f"  {score_label}={final_score}")
     print(f"{sep}\n")
 
 

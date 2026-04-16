@@ -48,6 +48,7 @@ class TwentyFortyEight:
         # merge (2048 tile) maps to scaled reward 8 — still an outlier but no
         # longer dominant enough to blow up the value-MSE variance.
         self.reward_scale  = 32.0
+        self.score_label   = "Max tile"   # y-axis label used in plots and prints
 
     # ── Core GSM interface ─────────────────────────────────────────────────────
 
@@ -107,6 +108,10 @@ class TwentyFortyEight:
         """Actual tile value of the largest tile on the board."""
         v = np.max(state)
         return int(2 ** v) if v > 0 else 0
+
+    def eval_score(self, steps: int, final_state) -> int:
+        """Evaluation score for one episode: the largest tile reached."""
+        return self.max_tile(final_state)
 
     def render(self, state):
         """Print the 4×4 board with actual tile values."""
