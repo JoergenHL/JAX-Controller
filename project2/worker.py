@@ -97,11 +97,17 @@ def collect_episode_worker(args: dict) -> dict:
         _, policy, mcts_val = mcts.search(state)
         mcts_values.append(float(mcts_val))
 
-        # Sample action from visit-count distribution (AlphaZero convention)
-        total  = sum(policy.values()) or 1
+        # Sample action from visit-count distribution (AlphaZero convention).
+        # Restrict to legal actions so the agent never wastes a step on a move
+        # that doesn't change the board (e.g. UP when the board is packed).
+        legal = set(game.legal_actions(state))
+        legal_policy = {a: v for a, v in policy.items() if a in legal}
+        if not legal_policy:
+            legal_policy = policy   # fallback: shouldn't happen (is_terminal guard above)
+        total  = sum(legal_policy.values()) or 1
         action = random.choices(
-            list(policy.keys()),
-            weights=[policy[a] / total for a in policy],
+            list(legal_policy.keys()),
+            weights=[legal_policy[a] / total for a in legal_policy],
             k=1,
         )[0]
 
@@ -169,8 +175,14 @@ def evaluate_greedy_worker(args: dict) -> dict:
                 jnp.array(state, dtype=jnp.float32)
             ))
             output = _net_fwd(nn_p, sigma)[0]
-            # output[0] = value; output[1:] = action logits
-            action = action_space[int(jnp.argmax(output[1:]))]
+            # output[0] = value; output[1:] = action logits.
+            # Mask illegal actions (those that don't change the board) to -inf
+            # so argmax always picks a move that makes progress.
+            legal = game.legal_actions(state)
+            logits = output[1:]
+            masked = [float(logits[i]) if action_space[i] in legal else float('-inf')
+                      for i in range(len(action_space))]
+            action = action_space[int(np.argmax(masked))]
             state  = game.next_state(state, action)
             steps += 1
 

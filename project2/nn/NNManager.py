@@ -11,6 +11,14 @@ class NNManager:
     
     def __init__(self):
         self.models = {}
+        # Persistent optimiser state across train_bptt calls (main process only —
+        # workers never train, so this is never pickled into subprocesses).
+        # Initialised lazily on the first train_bptt call, then reused every
+        # iteration so Adam momentum / second-moment estimates accumulate the
+        # consistent-across-iterations signal instead of being reset each time.
+        self.optimizer  = None
+        self.opt_state  = {}   # {net_name: opt_state}
+        self._rng_key   = None
     
     def create_net(self, name: str, dims: list[int]):
         """Create network with given dimensions."""
@@ -25,24 +33,26 @@ class NNManager:
         return self.models[name]
     
     def train_bptt(self, minibatches, abstract_dim, num_actions,
-                   num_epochs: int = 20, learning_rate: float = 0.01):
-        """Full BPTT through the NNr → NNd^w → NNp composite network.
+                   num_updates: int = 500, minibatch_size: int = 128,
+                   learning_rate: float = 0.01):
+        """MuZero-style minibatched BPTT through NNr → NNd^w → NNp.
 
-        This is the core MuZero training procedure (PDF: DO_BPTT_TRAINING).
+        Each gradient step samples `minibatch_size` random (episode, step)
+        windows from the full buffer and does one Adam update. Over `num_updates`
+        steps this is equivalent to the pseudocode's `for m in range(mbs)` loop
+        with many iterations.
 
-        For each minibatch sample:
-          1. Encode the real starting state: σ_k = NNr(s_k)
-          2. Unroll NNd w times with the real actions taken in the episode
-          3. At each step, call NNp(σ_{k+i}) → (v̂, π̂) and compare to targets
-          4. Loss = value MSE + policy CE + reward MSE across all w steps
-          5. jax.value_and_grad with argnums=(0,1,2) differentiates through the
-             entire unrolled graph — gradients flow back through all three networks
+        Per-sample loss (via jax.vmap over the sampled indices):
+          1. σ = NNr(s_k)
+          2. Unroll NNd w steps with the real actions
+          3. NNp(σ) at each step → compare to (value, policy) targets
+          4. Loss = value MSE + policy CE + reward MSE, mean over unroll
+          5. jax.value_and_grad with argnums=(0,1,2) differentiates through
+             the entire unrolled graph
 
-        Speed: instead of a Python for-loop over ~700 windows per epoch (each
-        triggering a separate JIT dispatch), all windows are stacked into JAX arrays
-        and processed in one jax.vmap call per epoch. This compiles to a single XLA
-        kernel that executes the entire batch in parallel, eliminating per-sample
-        Python overhead.
+        Optimiser state is persistent across train_bptt calls (stored on self),
+        so Adam momentum tracks the direction of travel as the buffer rotates
+        instead of restarting from zero each iteration.
         """
         nn_r = self.get_net("nnr")
         nn_d = self.get_net("nnd")
@@ -98,40 +108,35 @@ class NNManager:
         lw = _config.nn.get("loss_weights", {"value": 0.25, "policy": 1.0, "reward": 1.0})
         w_v, w_p, w_r = lw["value"], lw["policy"], lw["reward"]
 
-        def batch_loss(params_r, params_d, params_p):
-            """Mean loss over all windows, computed via vmap.
+        def batch_loss(params_r, params_d, params_p,
+                       mb_states, mb_actions, mb_v_t, mb_p_t, mb_r_t):
+            """Mean loss over the sampled minibatch, computed via vmap.
 
-            jax.vmap vectorises loss_for_one across the batch dimension:
-              - params (argnums 0-2): in_axes=None — shared across all samples
-              - data (argnums 3-7):   in_axes=0    — one slice per sample
-            The Python for-loop inside loss_for_one is unrolled at trace time
-            (roll_ahead is a static integer), then the entire unrolled graph is
-            vectorised. One JIT compilation covers all batch sizes with the same shape.
+            Params are shared across samples; data has a leading batch dim.
+            The Python for-loop inside loss_for_one (over roll_ahead) is
+            unrolled at trace time; the result is vmapped across the minibatch.
             """
             v_l, p_l, r_l = jax.vmap(
                 loss_for_one, in_axes=(None, None, None, 0, 0, 0, 0, 0)
             )(params_r, params_d, params_p,
-              batch_states, batch_actions, batch_v_t, batch_p_t, batch_r_t)
+              mb_states, mb_actions, mb_v_t, mb_p_t, mb_r_t)
             v_mean = jnp.mean(v_l)
             p_mean = jnp.mean(p_l)
             r_mean = jnp.mean(r_l)
             return w_v * v_mean + w_p * p_mean + w_r * r_mean, (v_mean, p_mean, r_mean)
 
-        # Adam optimizer — maintains per-parameter first + second moment estimates,
-        # giving momentum and adaptive learning rates. Converges significantly faster
-        # than vanilla SGD, especially under sparse rewards (e.g. 2048 early training).
-        optimizer = optax.adam(learning_rate)
-        opt_state_r = optimizer.init(params_r)
-        opt_state_d = optimizer.init(params_d)
-        opt_state_p = optimizer.init(params_p)
+        # Persistent Adam across train_bptt calls (see __init__). Lazy init on
+        # first call — at that point the network params exist and shapes are known.
+        if self.optimizer is None:
+            self.optimizer = optax.adam(learning_rate)
+            self.opt_state["nnr"] = self.optimizer.init(params_r)
+            self.opt_state["nnd"] = self.optimizer.init(params_d)
+            self.opt_state["nnp"] = self.optimizer.init(params_p)
+            self._rng_key = jax.random.PRNGKey(0)
 
-        # Compile once: the entire batch forward + backward pass becomes one XLA kernel.
-        grad_fn = jax.jit(
-            jax.value_and_grad(batch_loss, argnums=(0, 1, 2), has_aux=True)
-        )
-
-        print(f"  Training NNr+NNd+NNp via BPTT for {num_epochs} epochs "
-              f"({len(minibatches)} windows, roll_ahead={roll_ahead})...")
+        opt_state_r = self.opt_state["nnr"]
+        opt_state_d = self.opt_state["nnd"]
+        opt_state_p = self.opt_state["nnp"]
 
         def _clip_grads(grads, max_norm=1.0):
             """Clip gradient tree by global L2 norm to prevent explosion."""
@@ -140,28 +145,62 @@ class NNManager:
             scale = jnp.minimum(1.0, max_norm / (global_norm + 1e-8))
             return jax.tree_util.tree_map(lambda g: g * scale, grads)
 
-        history = []
-        for epoch in range(num_epochs):
-            (_, (v_loss, p_loss, r_loss)), (gr, gd, gp) = grad_fn(
-                params_r, params_d, params_p
-            )
-            gr, gd, gp = _clip_grads(gr), _clip_grads(gd), _clip_grads(gp)
-            updates_r, opt_state_r = optimizer.update(gr, opt_state_r, params_r)
-            updates_d, opt_state_d = optimizer.update(gd, opt_state_d, params_d)
-            updates_p, opt_state_p = optimizer.update(gp, opt_state_p, params_p)
-            params_r = optax.apply_updates(params_r, updates_r)
-            params_d = optax.apply_updates(params_d, updates_d)
-            params_p = optax.apply_updates(params_p, updates_p)
+        optimizer = self.optimizer
 
+        # One fused JIT'd update: sample-indexing, forward, backward, Adam step.
+        # The minibatch indices are passed in (not sampled inside) so the JIT
+        # cache key stays stable across calls.
+        @jax.jit
+        def update_step(params_r, params_d, params_p,
+                        opt_state_r, opt_state_d, opt_state_p, idx):
+            mb_s = batch_states[idx]
+            mb_a = batch_actions[idx]
+            mb_v = batch_v_t[idx]
+            mb_p = batch_p_t[idx]
+            mb_r = batch_r_t[idx]
+            (_, (v_loss, p_loss, r_loss)), (gr, gd, gp) = jax.value_and_grad(
+                batch_loss, argnums=(0, 1, 2), has_aux=True
+            )(params_r, params_d, params_p, mb_s, mb_a, mb_v, mb_p, mb_r)
+            gr, gd, gp = _clip_grads(gr), _clip_grads(gd), _clip_grads(gp)
+            upd_r, opt_state_r = optimizer.update(gr, opt_state_r, params_r)
+            upd_d, opt_state_d = optimizer.update(gd, opt_state_d, params_d)
+            upd_p, opt_state_p = optimizer.update(gp, opt_state_p, params_p)
+            params_r = optax.apply_updates(params_r, upd_r)
+            params_d = optax.apply_updates(params_d, upd_d)
+            params_p = optax.apply_updates(params_p, upd_p)
+            return (params_r, params_d, params_p,
+                    opt_state_r, opt_state_d, opt_state_p,
+                    v_loss, p_loss, r_loss)
+
+        N = len(minibatches)
+        mbs = min(minibatch_size, N)
+        print(f"  Training NNr+NNd+NNp via BPTT: {num_updates} updates "
+              f"(mbs={mbs}, buffer={N} windows, roll_ahead={roll_ahead})...")
+
+        history = []
+        for step in range(num_updates):
+            self._rng_key, sub = jax.random.split(self._rng_key)
+            idx = jax.random.randint(sub, (mbs,), 0, N)
+            (params_r, params_d, params_p,
+             opt_state_r, opt_state_d, opt_state_p,
+             v_loss, p_loss, r_loss) = update_step(
+                params_r, params_d, params_p,
+                opt_state_r, opt_state_d, opt_state_p, idx,
+            )
             total = float(v_loss) + float(p_loss) + float(r_loss)
             history.append((total, float(v_loss), float(p_loss), float(r_loss)))
 
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                print(f"    Epoch {epoch+1}/{num_epochs}: "
+            if (step + 1) % max(1, num_updates // 10) == 0 or step == 0:
+                print(f"    Update {step+1}/{num_updates}: "
                       f"loss={total:.4f}  "
                       f"(value={float(v_loss):.4f}, "
                       f"policy={float(p_loss):.4f}, "
                       f"reward={float(r_loss):.4f})")
+
+        # Persist optimiser state for the next iteration.
+        self.opt_state["nnr"] = opt_state_r
+        self.opt_state["nnd"] = opt_state_d
+        self.opt_state["nnp"] = opt_state_p
 
         nnx.update(nn_r, params_r)
         nnx.update(nn_d, params_d)

@@ -96,9 +96,14 @@ class ReinforcementLearningManager:
             # Sample action from MCTS visit distribution (AlphaZero training convention).
             # Argmax would always pick LEFT when values are uniform (equal visit counts),
             # preventing exploration. Sampling ensures diverse self-play data from the start.
-            total = sum(policy.values()) or 1
-            action = random.choices(list(policy.keys()),
-                                    weights=[policy[a] / total for a in policy],
+            # Restrict to legal actions so the agent never wastes a step on a no-op move.
+            legal = set(self.gsm.legal_actions(state))
+            legal_policy = {a: v for a, v in policy.items() if a in legal}
+            if not legal_policy:
+                legal_policy = policy   # fallback: shouldn't happen (is_terminal guard above)
+            total = sum(legal_policy.values()) or 1
+            action = random.choices(list(legal_policy.keys()),
+                                    weights=[legal_policy[a] / total for a in legal_policy],
                                     k=1)[0]
 
             actions.append(action)
@@ -152,7 +157,8 @@ class ReinforcementLearningManager:
 
     # ── Training loop ──────────────────────────────────────────────────────────
 
-    def train(self, num_iterations=None, episodes_per_iter=None, epochs=None):
+    def train(self, num_iterations=None, episodes_per_iter=None,
+              updates_per_iter=None, minibatch_size=None):
         """Self-play training loop.
 
         Each iteration:
@@ -166,7 +172,8 @@ class ReinforcementLearningManager:
         """
         num_iterations    = num_iterations    or config.training["num_iterations"]
         episodes_per_iter = episodes_per_iter or config.training["episodes_per_iter"]
-        epochs            = epochs            or config.training["epochs_per_iter"]
+        updates_per_iter  = updates_per_iter  or config.training["updates_per_iter"]
+        minibatch_size    = minibatch_size    or config.training["minibatch_size"]
 
         num_workers = config.training.get("num_workers", 1)
         use_parallel = num_workers > 1
@@ -214,9 +221,9 @@ class ReinforcementLearningManager:
                         episode['values'],
                     )
 
-                print(f"  Training for {epochs} epochs...")
+                print(f"  Training for {updates_per_iter} updates (mbs={minibatch_size})...")
                 iter_boundaries.append(len(all_losses))
-                iter_losses = self._train_networks(epochs)
+                iter_losses = self._train_networks(updates_per_iter, minibatch_size)
                 if iter_losses:
                     all_losses.extend(iter_losses)
 
@@ -235,7 +242,7 @@ class ReinforcementLearningManager:
         return {'losses': all_losses, 'iter_boundaries': iter_boundaries,
                 'eval_scores': eval_scores}
 
-    def _train_networks(self, epochs):
+    def _train_networks(self, updates_per_iter, minibatch_size):
         """Build BPTT minibatches from the episode buffer and train all three networks.
 
         Stage 4A: replaces the flat train_repr_pred call with full BPTT roll-ahead.
@@ -310,7 +317,8 @@ class ReinforcementLearningManager:
             minibatches,
             abstract_dim=config.nn["abstract_dim"],
             num_actions=self.gsm.num_actions,
-            num_epochs=epochs,
+            num_updates=updates_per_iter,
+            minibatch_size=minibatch_size,
             learning_rate=config.nn["learning_rate"],
         )
 
@@ -357,7 +365,10 @@ class ReinforcementLearningManager:
                 all_probs.append(probs)
                 all_max_tiles.append(self.gsm.max_tile(state))
 
-                action = action_space[int(jnp.argmax(output[1:]))]
+                legal = self.gsm.legal_actions(state)
+                logits = np.array(output[1:])
+                logits[[i for i, a in enumerate(action_space) if a not in legal]] = float('-inf')
+                action = action_space[int(np.argmax(logits))]
                 state  = self.gsm.next_state(state, action)
                 steps += 1
 

@@ -38,9 +38,15 @@ class TwentyFortyEight:
         self.num_actions   = 4
         self.win_tile_log2 = 11.0   # log2(2048) — effectively unreachable
         # Divide reward/value targets by this in rlm._train_networks to keep
-        # loss magnitudes comparable. Reward is now log2(merge_score) per step
-        # (~2–11 per productive move). A full game has 50–150 productive merges
-        # → total return ~150–600. Dividing by 32 keeps value targets in ~5–20.
+        # loss magnitudes comparable. Reward is now the raw merge_score
+        # (sum of merged tile values this move) — range per step ~4 to 4096+.
+        # Cumulative return to build one 2048 tile is ~11 × 4096 ≈ 45k (every
+        # doubling level contributes ~4096, so progress is reward-neutral
+        # across levels — a nice property of raw scoring).
+        # A typical game reaching the 256 tile accumulates ~5k raw return.
+        # Dividing by 256 keeps value targets in ~20 range; the largest single
+        # merge (2048 tile) maps to scaled reward 8 — still an outlier but no
+        # longer dominant enough to blow up the value-MSE variance.
         self.reward_scale  = 32.0
 
     # ── Core GSM interface ─────────────────────────────────────────────────────
@@ -80,7 +86,7 @@ class TwentyFortyEight:
         _, _, merge_score = self._apply_move(state, action)
         if merge_score == 0:
             return 0.0
-        return math.log2(merge_score)
+        return merge_score
 
     def is_terminal(self, state):
         """No valid moves remain: board is full and no adjacent equal tiles."""

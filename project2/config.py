@@ -34,9 +34,16 @@ nn = {
 }
 
 training = {
-    "num_iterations":    50,
+    "num_iterations":    10,
     "episodes_per_iter": 9,
-    "epochs_per_iter":   100,
+    # MuZero-style minibatching: many small random-sample gradient steps per
+    # iteration instead of full-batch epoch passes. Each update samples
+    # `minibatch_size` random (episode, step) windows from the buffer.
+    # Tuning rationale: with ~13k windows in the buffer and mbs=128,
+    # 500 updates exposes each window ~5× on average per iteration — enough
+    # signal to track the moving target without memorising any snapshot.
+    "updates_per_iter":  500,
+    "minibatch_size":    128,
     "roll_ahead":         3,   # w: steps to unroll NNd during BPTT
     # Replay buffer cap. Once full, oldest episode is dropped on each add.
     # Keeps batch size constant → JAX JIT compiles once and reuses every iter.
@@ -64,7 +71,7 @@ viz = {
     # Each checkpoint plays eval_games greedy NNr+NNp games — fast, matches
     # deployment. Set eval_every=0 to skip entirely.
     "eval_every":  1,       # 0 = off; N = evaluate after every N-th iteration
-    "eval_games":  5,       # games per checkpoint
+    "eval_games":  10,       # games per checkpoint
 
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.

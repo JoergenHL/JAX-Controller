@@ -38,11 +38,12 @@ if __name__ == "__main__":
     rlm = ReinforcementLearningManager(game, nnm)
 
     # ── Training ───────────────────────────────────────────────────────────────
-    n_iter   = config.training["num_iterations"]
-    n_ep     = config.training["episodes_per_iter"]
-    n_epochs = config.training["epochs_per_iter"]
+    n_iter    = config.training["num_iterations"]
+    n_ep      = config.training["episodes_per_iter"]
+    n_updates = config.training["updates_per_iter"]
+    mbs       = config.training["minibatch_size"]
     print("=" * 62)
-    print(f"TRAINING  ({n_iter} iter × {n_ep} episodes × {n_epochs} epochs/iter)")
+    print(f"TRAINING  ({n_iter} iter × {n_ep} episodes × {n_updates} updates/iter, mbs={mbs})")
     print(f"  NNr: {nnr_dims}")
     print(f"  NNp: {nnp_dims}")
     print(f"  NNd: {nnd_dims}")
