@@ -1,9 +1,13 @@
 """Reinforcement Learning Manager."""
 
 import contextlib
+import glob
+import json
 import multiprocessing
+import os
 import random
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime
 
 import numpy as np
 import jax.numpy as jnp
@@ -11,6 +15,58 @@ from mcts.mcts import MCTS
 from buffer import EpisodeBuffer
 from game.ASM import ASM
 import config
+
+
+def compute_sampling_tau(iteration: int, total_iterations: int, cfg: dict) -> float:
+    """Compute the self-play action-sampling temperature at a given iteration.
+
+    Shared by the main process (rlm.collect_episode) and the workers
+    (worker.collect_episode_worker) so both agree on τ without duplicated logic.
+
+    Schedule:
+      iteration < transition_at * total_iterations  → τ = start
+      otherwise → linear interp start → end across the remaining iterations.
+    """
+    start = float(cfg.get("start",         1.0))
+    end   = float(cfg.get("end",           0.2))
+    frac  = float(cfg.get("transition_at", 0.5))
+
+    if total_iterations <= 1:
+        return start
+
+    transition_iter = frac * (total_iterations - 1)
+    if iteration <= transition_iter:
+        return start
+
+    span = (total_iterations - 1) - transition_iter
+    if span <= 0:
+        return end
+    progress = (iteration - transition_iter) / span
+    progress = max(0.0, min(1.0, progress))
+    return start + (end - start) * progress
+
+
+def temperature_sample(policy: dict, tau: float, rng=None):
+    """Sample one action from a visit-count dict under temperature τ.
+
+    policy: {action: visit_count}. rng: optional random.Random for determinism.
+    """
+    import random as _random
+    rng = rng or _random
+    if tau <= 1e-6:
+        # Argmax (ties broken by rng.choice over winners)
+        max_v = max(policy.values())
+        winners = [a for a, v in policy.items() if v == max_v]
+        return rng.choice(winners) if len(winners) > 1 else winners[0]
+
+    inv = 1.0 / tau
+    actions, weights = [], []
+    for a, v in policy.items():
+        actions.append(a)
+        weights.append(max(float(v), 0.0) ** inv)
+    total = sum(weights) or 1.0
+    probs = [w / total for w in weights]
+    return rng.choices(actions, weights=probs, k=1)[0]
 
 
 class ReinforcementLearningManager:
@@ -27,7 +83,7 @@ class ReinforcementLearningManager:
         self.gsm = game_state_manager
         self.nnm = nn_manager
         self.episode_buffer = EpisodeBuffer(
-            max_size=config.training["buffer_size"]
+            max_size=self._resolve_buffer_cap()
         )
         self.asm = ASM()
 
@@ -47,6 +103,25 @@ class ReinforcementLearningManager:
         self.mcts.num_simulations = config.mcts["num_simulations"]
         self.mcts.c     = config.mcts["c"]
         self.mcts.d_max = config.mcts["d_max"]
+
+    # ── Buffer sizing ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_buffer_cap() -> int:
+        """Resolve the replay-buffer capacity from config.
+
+        Priority:
+          1. training["buffer_size"] — explicit raw cap (hparam scripts use this)
+          2. derived: episodes_per_iter * min(buffer_history_iters, num_iterations)
+        """
+        explicit = config.training.get("buffer_size")
+        if explicit is not None:
+            return int(explicit)
+
+        eps      = config.training["episodes_per_iter"]
+        hist     = config.training["buffer_history_iters"]
+        n_iter   = config.training["num_iterations"]
+        return eps * min(hist, n_iter)
 
     # ── Network interface ──────────────────────────────────────────────────────
 
@@ -68,19 +143,23 @@ class ReinforcementLearningManager:
 
     # ── Episode collection ─────────────────────────────────────────────────────
 
-    def collect_episode(self):
+    def collect_episode(self, iteration: int = 0, total_iterations: int = 1):
         """Play one game using MCTS and return the trajectory.
 
         At each step:
           1. Run MCTS simulations from the current state
-          2. Pick the most-visited action
+          2. Sample an action under the current temperature τ
           3. Record the state, chosen action, reward, and MCTS visit distribution
 
+        τ follows the schedule in config.training["sampling_temp"] — high τ
+        early in training (exploration), decays toward τ_end late (exploitation).
+
         After the game ends, compute per-step returns (G_t = sum of future rewards).
-        For LineWorld, the reward is sparse (only ±1 at the terminal step), so
-        every state in a winning episode gets return +1 and every state in a
-        losing episode gets return -1.
         """
+        tau = compute_sampling_tau(
+            iteration, total_iterations,
+            config.training.get("sampling_temp", {}),
+        )
         states, actions, rewards, policies, mcts_values = [], [], [], [], []
 
         state = self.gsm.initial_state()
@@ -100,18 +179,14 @@ class ReinforcementLearningManager:
             # value-target variance from ~200-step horizon to n_step horizon.
             mcts_values.append(mcts_val)
 
-            # Sample action from MCTS visit distribution (AlphaZero training convention).
-            # Argmax would always pick LEFT when values are uniform (equal visit counts),
-            # preventing exploration. Sampling ensures diverse self-play data from the start.
+            # Sample action from MCTS visit distribution under temperature τ.
+            # τ=1 → proportional to visits (exploration); τ→0 → argmax (exploitation).
             # Restrict to legal actions so the agent never wastes a step on a no-op move.
             legal = set(self.gsm.legal_actions(state))
             legal_policy = {a: v for a, v in policy.items() if a in legal}
             if not legal_policy:
                 legal_policy = policy   # fallback: shouldn't happen (is_terminal guard above)
-            total = sum(legal_policy.values()) or 1
-            action = random.choices(list(legal_policy.keys()),
-                                    weights=[legal_policy[a] / total for a in legal_policy],
-                                    k=1)[0]
+            action = temperature_sample(legal_policy, tau)
 
             actions.append(action)
             policies.append(policy)    # {action: visit_count} from MCTS
@@ -141,7 +216,8 @@ class ReinforcementLearningManager:
             dims[name] = model_dims
         return dims
 
-    def _collect_parallel(self, n: int, pool: ProcessPoolExecutor) -> list:
+    def _collect_parallel(self, n: int, pool: ProcessPoolExecutor,
+                          iteration: int = 0, total_iterations: int = 1) -> list:
         """Submit n episode-collection tasks to the worker pool and gather results.
 
         All n tasks are submitted before waiting on any, so they run truly in
@@ -159,14 +235,131 @@ class ReinforcementLearningManager:
             "mcts_cfg":     dict(config.mcts),
             "max_steps":    500,
             "q":            config.nn.get("q", 0),
+            "iteration":          iteration,
+            "total_iterations":   total_iterations,
+            "sampling_temp_cfg":  dict(config.training.get("sampling_temp", {})),
         }
         futures = [pool.submit(collect_episode_worker, args) for _ in range(n)]
         return [f.result() for f in futures]
 
+    # ── Checkpoint / leaderboard helpers ───────────────────────────────────────
+
+    def _snapshot_metadata(self, network_dims: dict, game_name: str,
+                            iteration: int, eval_avg: float,
+                            eval_scores: list, kind: str) -> dict:
+        """Build the companion JSON dict for a saved .pkl checkpoint.
+
+        Matches the shape that watch_cartpole.py / best_cartpole.py expect:
+        they read config.nn (for network reconstruction) and game. The extra
+        fields (iteration, eval_avg, kind) are diagnostic — ignored by the
+        loaders but useful when inspecting `runs/`.
+        """
+        return {
+            "timestamp":     datetime.now().isoformat(timespec="seconds"),
+            "game":          game_name,
+            "reward_scale":  self.gsm.reward_scale,
+            "kind":          kind,          # "checkpoint" or "best"
+            "iteration":     iteration,
+            "eval_avg":      round(float(eval_avg), 2),
+            "eval_scores":   list(eval_scores),
+            "config": {
+                "mcts":     dict(config.mcts),
+                "nn":       dict(config.nn),
+                "training": dict(config.training),
+                "viz":      dict(config.viz),
+            },
+            "network_dims":  network_dims,
+            "iterations":    [],   # empty placeholder for display-only loaders
+        }
+
+    def _save_checkpoint(self, pkl_path: str, json_path: str, meta: dict):
+        """Persist current nnm weights + companion JSON metadata."""
+        self.nnm.save(pkl_path)
+        with open(json_path, "w") as f:
+            json.dump(meta, f, indent=2)
+
+    def _write_leaderboard_files(self, leaderboard: list, run_prefix: str,
+                                  network_dims: dict, game_name: str):
+        """Rewrite the top-K _bestN.pkl / .json files from in-memory snapshots.
+
+        Called after every leaderboard update. K is small (≤5), pkl writes are
+        fast, and the sort order is authoritative — simplest to delete and
+        rewrite rather than track renames.
+        """
+        from nn.NNManager import NNManager
+        # Clear any stale _bestN.* files (in case K shrinks or prefix reused)
+        for stale in glob.glob(f"{run_prefix}_best*.pkl") + \
+                     glob.glob(f"{run_prefix}_best*.json"):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+
+        for rank, entry in enumerate(leaderboard, start=1):
+            pkl_path  = f"{run_prefix}_best{rank}.pkl"
+            json_path = f"{run_prefix}_best{rank}.json"
+
+            # Reconstruct a throwaway NNManager with this entry's weights so
+            # we can reuse NNManager.save (which produces the (gdef, state)
+            # pickle format that watch_cartpole/best_cartpole load from).
+            tmp = NNManager()
+            for name, dims in network_dims.items():
+                tmp.create_net(name, dims)
+            tmp.set_layer_weights(entry["layer_weights"])
+            tmp.save(pkl_path)
+            entry["pkl_path"] = pkl_path
+            entry["rank"]     = rank
+
+            meta = self._snapshot_metadata(
+                network_dims, game_name,
+                iteration=entry["iteration"],
+                eval_avg=entry["eval_avg"],
+                eval_scores=entry["eval_scores"],
+                kind="best",
+            )
+            meta["rank"] = rank
+            with open(json_path, "w") as f:
+                json.dump(meta, f, indent=2)
+
+    def _update_leaderboard(self, leaderboard: list, iteration: int,
+                             eval_avg: float, eval_scores: list,
+                             run_prefix: str, network_dims: dict,
+                             game_name: str, k: int, threshold: float) -> list:
+        """Insert a candidate into the top-K leaderboard if it qualifies.
+
+        Returns the (possibly modified) leaderboard sorted best-first.
+        """
+        if k <= 0 or eval_avg < threshold:
+            return leaderboard
+
+        # Fast reject: already full and strictly worse than the worst kept entry
+        if len(leaderboard) >= k and eval_avg <= leaderboard[-1]["eval_avg"]:
+            return leaderboard
+
+        leaderboard.append({
+            "iteration":     iteration,
+            "eval_avg":      float(eval_avg),
+            "eval_scores":   list(eval_scores),
+            "layer_weights": self.nnm.get_layer_weights(),
+        })
+        leaderboard.sort(key=lambda e: e["eval_avg"], reverse=True)
+        del leaderboard[k:]
+
+        self._write_leaderboard_files(leaderboard, run_prefix,
+                                       network_dims, game_name)
+        new_rank = next((i for i, e in enumerate(leaderboard)
+                         if e["iteration"] == iteration), None)
+        if new_rank is not None:
+            print(f"  ★ Leaderboard update: iter {iteration} entered at rank "
+                  f"{new_rank + 1} (eval_avg={eval_avg:.1f})")
+        return leaderboard
+
     # ── Training loop ──────────────────────────────────────────────────────────
 
     def train(self, num_iterations=None, episodes_per_iter=None,
-              updates_per_iter=None, minibatch_size=None):
+              updates_per_iter=None, minibatch_size=None,
+              run_prefix: str = None, network_dims: dict = None,
+              game_name: str = None):
         """Self-play training loop.
 
         Each iteration:
@@ -183,6 +376,11 @@ class ReinforcementLearningManager:
         updates_per_iter  = updates_per_iter  or config.training["updates_per_iter"]
         minibatch_size    = minibatch_size    or config.training["minibatch_size"]
 
+        # Total gradient steps across the entire run — drives the cosine LR
+        # schedule inside NNManager. Computed once; same value passed every call
+        # since optax's schedule tracks its own step count in opt_state.
+        total_updates = num_iterations * updates_per_iter
+
         num_workers = config.training.get("num_workers", 1)
         use_parallel = num_workers > 1
 
@@ -195,9 +393,19 @@ class ReinforcementLearningManager:
         all_losses      = []   # (total, value, policy, reward) per epoch, all iterations
         iter_boundaries = []   # epoch index at which each iteration begins
         eval_scores     = []   # (iteration, pct, avg_tile, [tile_per_game]) when enabled
+        leaderboard     = []   # top-K entries, sorted best-first
 
         eval_every = config.viz.get("eval_every", 0)
         eval_games = config.viz.get("eval_games", 5)
+
+        # Checkpoint + leaderboard setup. File persistence is gated on run_prefix;
+        # hparam-search callers pass None to skip all disk writes.
+        ckpt_every  = config.viz.get("checkpoint_every", 0) if run_prefix else 0
+        lb_k        = config.viz.get("best_leaderboard_k", 0) if run_prefix else 0
+        lb_thresh   = config.viz.get("best_threshold", 0.0)
+        persist     = run_prefix is not None and network_dims is not None
+        if persist and game_name is None:
+            game_name = self.gsm.__class__.__name__
 
         # Create a persistent worker pool (lives for all iterations so JAX
         # initialisation cost in each worker is paid once, not per iteration).
@@ -212,12 +420,23 @@ class ReinforcementLearningManager:
             for it in range(num_iterations):
                 print(f"[Iteration {it+1}/{num_iterations}]")
 
+                tau_now = compute_sampling_tau(
+                    it, num_iterations,
+                    config.training.get("sampling_temp", {}),
+                )
                 print(f"  Collecting {episodes_per_iter} episodes"
-                      f"{' (parallel)' if use_parallel else ''}...")
+                      f"{' (parallel)' if use_parallel else ''}"
+                      f"  τ={tau_now:.2f}")
                 if use_parallel:
-                    episodes = self._collect_parallel(episodes_per_iter, pool)
+                    episodes = self._collect_parallel(
+                        episodes_per_iter, pool,
+                        iteration=it, total_iterations=num_iterations,
+                    )
                 else:
-                    episodes = [self.collect_episode()
+                    episodes = [self.collect_episode(
+                                    iteration=it,
+                                    total_iterations=num_iterations,
+                                )
                                 for _ in range(episodes_per_iter)]
 
                 for episode in episodes:
@@ -231,26 +450,59 @@ class ReinforcementLearningManager:
 
                 print(f"  Training for {updates_per_iter} updates (mbs={minibatch_size})...")
                 iter_boundaries.append(len(all_losses))
-                iter_losses = self._train_networks(updates_per_iter, minibatch_size)
+                iter_losses = self._train_networks(updates_per_iter, minibatch_size,
+                                                    total_updates=total_updates)
                 if iter_losses:
                     all_losses.extend(iter_losses)
 
                 print(f"  Buffer: {self.episode_buffer.size()} episodes")
 
                 # Optional in-training evaluation — off by default (eval_every=0)
+                this_iter_eval = None
                 if eval_every > 0 and (it + 1) % eval_every == 0:
                     pct, avg_tile, tiles = self.evaluate(
                         num_games=eval_games,
                         pool=pool if use_parallel else None,
                     )
                     eval_scores.append((it + 1, pct, avg_tile, tiles))
+                    this_iter_eval = (avg_tile, tiles)
+
+                # Interval checkpoints (video progression snapshots)
+                if persist and ckpt_every > 0 and (it + 1) % ckpt_every == 0:
+                    ckpt_pkl  = f"{run_prefix}_ckpt_iter{it + 1:03d}.pkl"
+                    ckpt_json = f"{run_prefix}_ckpt_iter{it + 1:03d}.json"
+                    avg_for_meta    = this_iter_eval[0] if this_iter_eval else 0.0
+                    scores_for_meta = this_iter_eval[1] if this_iter_eval else []
+                    meta = self._snapshot_metadata(
+                        network_dims, game_name,
+                        iteration=it + 1,
+                        eval_avg=avg_for_meta,
+                        eval_scores=scores_for_meta,
+                        kind="checkpoint",
+                    )
+                    self._save_checkpoint(ckpt_pkl, ckpt_json, meta)
+
+                # Top-K leaderboard update (only when this iteration was eval'd)
+                if persist and lb_k > 0 and this_iter_eval is not None:
+                    leaderboard = self._update_leaderboard(
+                        leaderboard,
+                        iteration=it + 1,
+                        eval_avg=this_iter_eval[0],
+                        eval_scores=this_iter_eval[1],
+                        run_prefix=run_prefix,
+                        network_dims=network_dims,
+                        game_name=game_name,
+                        k=lb_k,
+                        threshold=lb_thresh,
+                    )
 
                 print()
 
         return {'losses': all_losses, 'iter_boundaries': iter_boundaries,
-                'eval_scores': eval_scores}
+                'eval_scores': eval_scores, 'leaderboard': leaderboard}
 
-    def _train_networks(self, updates_per_iter, minibatch_size):
+    def _train_networks(self, updates_per_iter, minibatch_size,
+                        total_updates: int = None):
         """Build BPTT minibatches from the episode buffer and train all three networks.
 
         Stage 4A: replaces the flat train_repr_pred call with full BPTT roll-ahead.
@@ -330,6 +582,9 @@ class ReinforcementLearningManager:
             num_updates=updates_per_iter,
             minibatch_size=minibatch_size,
             learning_rate=config.nn["learning_rate"],
+            total_updates=total_updates,
+            lr_schedule=config.nn.get("lr_schedule", "constant"),
+            lr_floor_frac=config.nn.get("lr_floor_frac", 0.1),
         )
 
     # ── Policy data sampling ───────────────────────────────────────────────────

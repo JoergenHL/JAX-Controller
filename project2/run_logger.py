@@ -15,14 +15,19 @@ from datetime import datetime
 class RunLogger:
     """Accumulate metrics for one training run and persist to JSON."""
 
-    def __init__(self, game, config_module, network_dims: dict):
+    def __init__(self, game, config_module, network_dims: dict,
+                 timestamp_str: str = None):
         """
         Args:
-            game:          game instance (for class name + reward_scale)
-            config_module: the imported config module (for snapshot)
-            network_dims:  dict with 'nnr', 'nnp', 'nnd' dimension lists
+            game:           game instance (for class name + reward_scale)
+            config_module:  the imported config module (for snapshot)
+            network_dims:   dict with 'nnr', 'nnp', 'nnd' dimension lists
+            timestamp_str:  optional pre-derived timestamp string
+                            ("YYYY-MM-DD_HH-MM-SS"). When supplied, the
+                            logger, interval checkpoints, and best-leaderboard
+                            files all share the same run prefix.
         """
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        ts = timestamp_str or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         self.run_name = f"{game.__class__.__name__}_{ts}"
 
         self.data = {
@@ -103,6 +108,22 @@ class RunLogger:
             "win_pct":    round(pct, 1),
             "all_scores": scores,
         }
+
+    def log_leaderboard(self, entries: list):
+        """Attach final top-K leaderboard ranking (post-training shootout).
+
+        Args:
+            entries: list of dicts sorted best-first. Each entry:
+              {
+                "rank":                int,
+                "iteration":           int,
+                "selection_eval_avg":  float,  # 50-game avg that earned its slot
+                "final_eval_avg":      float,  # 1000-game shootout avg
+                "final_eval_games":    int,
+                "pkl_path":            str,
+              }
+        """
+        self.data["leaderboard"] = entries
 
     def log_mcts_eval(self, pct: float, avg: float, scores: list):
         """Attach one-time MCTS evaluation results to the run record."""
