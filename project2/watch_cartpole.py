@@ -23,6 +23,7 @@ from flax import nnx
 import gymnasium as gym
 
 from nn.NNManager import NNManager
+from game.ASM import ASM
 import config
 
 _net_fwd = nnx.jit(lambda model, x: model(x))
@@ -68,10 +69,11 @@ def load_model(pkl_path: str):
     return nnm, run_data
 
 
-def watch(nnm: NNManager, num_games: int = 1, render_fps: int = 30):
+def watch(nnm: NNManager, run_data: dict, num_games: int = 1, render_fps: int = 30):
     """Play num_games episodes with the gym renderer open."""
     nn_r = nnm.get_net("nnr")
     nn_p = nnm.get_net("nnp")
+    q    = run_data.get("config", {}).get("nn", {}).get("q", 0)
 
     env = gym.make("CartPole-v1", render_mode="human")
     env.metadata["render_fps"] = render_fps
@@ -81,12 +83,14 @@ def watch(nnm: NNManager, num_games: int = 1, render_fps: int = 30):
         obs, _ = env.reset()
         steps  = 0
         done   = False
+        state_history = []
 
         while not done and steps < 500:
-            # NNr: gym obs (float64 ndarray shape (4,)) → abstract state
+            state_history.append(np.array(obs, dtype=np.float32))
+            nnr_input = ASM.build_state_window(state_history, q)
             sigma = _net_fwd(
                 nn_r,
-                jnp.atleast_2d(jnp.array(obs, dtype=jnp.float32))
+                jnp.atleast_2d(jnp.array(nnr_input, dtype=jnp.float32))
             )
             # NNp: abstract state → (value, policy logits)
             output  = _net_fwd(nn_p, sigma)[0]   # shape [1 + num_actions]
@@ -123,4 +127,4 @@ if __name__ == "__main__":
     print(f"  Iters:   {len(run_data.get('iterations', []))}")
     print(f"  Playing {num_games} game(s)...\n")
 
-    watch(nnm, num_games=num_games)
+    watch(nnm, run_data, num_games=num_games)

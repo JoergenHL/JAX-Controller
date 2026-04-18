@@ -23,7 +23,8 @@ if __name__ == "__main__":
     a = game.num_actions  # action count         (2 for LineWorld,  4 for 2048)
     d = config.nn["abstract_dim"]
 
-    nnr_dims = [s]     + config.nn["nnr_hidden"] + [d    ]
+    q        = config.nn.get("q", 0)
+    nnr_dims = [s * (q + 1)] + config.nn["nnr_hidden"] + [d]
     nnp_dims = [d]     + config.nn["nnp_hidden"] + [1 + a]
     nnd_dims = [d + a] + config.nn["nnd_hidden"] + [d + 1]
 

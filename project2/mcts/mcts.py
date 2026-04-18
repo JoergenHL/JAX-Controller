@@ -54,19 +54,19 @@ class MCTS:
         self.c    = 2
         self.d_max = 10
 
-    def search(self, real_state):
-        """Run u-MCTS from a real game state and return best action.
+    def search(self, nnr_input):
+        """Run u-MCTS from a (possibly windowed) NNr input and return best action.
 
-        Encodes the real state to abstract space once at the root; all
-        subsequent expansion and evaluation happens in abstract space.
+        The caller is responsible for building the look-back window via
+        ASM.build_state_window(history, q) before calling search().
+        For q=0 this is just the raw state — identical to the old interface.
 
         Returns:
             action: Best action according to visit counts
             policy: Dict {action: visit_count} — training target for NNp
             value:  Root value estimate
         """
-        # atleast_2d: scalar state → [1,1]; flat array (e.g. 16-cell board) → [1, state_dim]
-        sigma = _net_fwd(self.nn_r, jnp.atleast_2d(jnp.array(real_state, dtype=jnp.float32)))
+        sigma = _net_fwd(self.nn_r, jnp.atleast_2d(jnp.array(nnr_input, dtype=jnp.float32)))
         root  = Node(sigma)
 
         for _ in range(self.num_simulations):

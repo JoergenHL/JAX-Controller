@@ -185,7 +185,8 @@ def run_trial(trial_num, lr, c, d_max, num_sims, eps_per_iter,
     game = _get_game(GAME)
     s, a, d = game.state_dim, game.num_actions, config.nn["abstract_dim"]
 
-    nnr_dims = [s]     + config.nn["nnr_hidden"] + [d]
+    q        = config.nn.get("q", 0)
+    nnr_dims = [s * (q + 1)] + config.nn["nnr_hidden"] + [d]
     nnp_dims = [d]     + config.nn["nnp_hidden"] + [1 + a]
     nnd_dims = [d + a] + config.nn["nnd_hidden"] + [d + 1]
 

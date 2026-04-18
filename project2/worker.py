@@ -87,16 +87,21 @@ def collect_episode_worker(args: dict) -> dict:
     mcts.d_max           = cfg["d_max"]
 
     # ── Episode loop (mirrors rlm.collect_episode) ─────────────────────────────
+    from game.ASM import ASM
     states, actions, rewards, policies, mcts_values = [], [], [], [], []
     state     = game.initial_state()
     max_steps = args["max_steps"]
+    q         = args.get("q", 0)
     steps     = 0
+    state_history = []
 
     while not game.is_terminal(state) and steps < max_steps:
         states.append(np.asarray(state, dtype=np.float32))
+        state_history.append(state)
         steps += 1
 
-        _, policy, mcts_val = mcts.search(state)
+        nnr_input = ASM.build_state_window(state_history, q)
+        _, policy, mcts_val = mcts.search(nnr_input)
         mcts_values.append(float(mcts_val))
 
         # Sample action from visit-count distribution (AlphaZero convention).
@@ -164,6 +169,8 @@ def evaluate_greedy_worker(args: dict) -> dict:
     nn_p = nnm.get_net("nnp")
     action_space = game.action_space
 
+    from game.ASM import ASM
+    q      = args.get("q", 0)
     wins   = 0
     scores = []
 
@@ -171,10 +178,13 @@ def evaluate_greedy_worker(args: dict) -> dict:
         state    = game.initial_state()
         max_steps = args["max_steps"]
         steps    = 0
+        state_history = []
 
         while not game.is_terminal(state) and steps < max_steps:
+            state_history.append(state)
+            nnr_input = ASM.build_state_window(state_history, q)
             sigma  = _net_fwd(nn_r, jnp.atleast_2d(
-                jnp.array(state, dtype=jnp.float32)
+                jnp.array(nnr_input, dtype=jnp.float32)
             ))
             output = _net_fwd(nn_p, sigma)[0]
             # output[0] = value; output[1:] = action logits.

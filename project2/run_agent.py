@@ -22,6 +22,7 @@ from flax import nnx
 
 from nn.NNManager import NNManager
 from worker import _get_game
+from game.ASM import ASM
 import config
 
 _net_fwd = nnx.jit(lambda model, x: model(x))
@@ -85,23 +86,27 @@ def play(game, nnm: NNManager, max_steps: int = None):
     nn_p = nnm.get_net("nnp")
     action_space = game.action_space
     score_label  = getattr(game, "score_label", "Score")
+    q            = run_data.get("config", {}).get("nn", {}).get("q", 0)
 
     state        = game.initial_state()
+    state_history = []
     total_reward = 0.0
     steps        = 0
 
     sep = "─" * 44
     print(f"\n{sep}")
     print(f"  Greedy replay  (NNr + NNp, max {max_steps} steps)")
-    print(f"  Game: {game.__class__.__name__}")
+    print(f"  Game: {game.__class__.__name__}  (q={q})")
     print(sep)
     print("Initial board:")
     game.render(state)
 
     while not game.is_terminal(state) and steps < max_steps:
-        # NNr: real state → abstract state σ
+        state_history.append(state)
+        nnr_input = ASM.build_state_window(state_history, q)
+        # NNr: windowed real states → abstract state σ
         sigma = _net_fwd(nn_r, jnp.atleast_2d(
-            jnp.array(state, dtype=jnp.float32)
+            jnp.array(nnr_input, dtype=jnp.float32)
         ))
 
         # NNp: σ → (value, policy logits)

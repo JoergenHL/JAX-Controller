@@ -55,12 +55,15 @@ class ReinforcementLearningManager:
 
         Used for evaluation and show_predictions() outside of MCTS.
         (Inside u-MCTS, ASM is called directly on abstract states.)
+        No history available here — pads with the state itself (q copies).
 
         Returns:
             value: scalar estimate of the state's worth
             policy_logits: raw (pre-softmax) action preferences
         """
-        abstract = self.asm.map_abstract_state(state, self.nnm.get_net("nnr"))
+        q = config.nn.get("q", 0)
+        nnr_input = ASM.build_state_window([state], q)
+        abstract = self.asm.map_abstract_state(nnr_input, self.nnm.get_net("nnr"))
         return self.asm.predict(abstract, self.nnm.get_net("nnp"))
 
     # ── Episode collection ─────────────────────────────────────────────────────
@@ -83,11 +86,15 @@ class ReinforcementLearningManager:
         state = self.gsm.initial_state()
         max_steps = 500   # safety bound for games without a natural early terminal
         steps = 0
+        q = config.nn.get("q", 0)
+        state_history = []
         while not self.gsm.is_terminal(state) and steps < max_steps:
             states.append(state)
+            state_history.append(state)
             steps += 1
 
-            _, policy, mcts_val = self.mcts.search(state)
+            nnr_input = ASM.build_state_window(state_history, q)
+            _, policy, mcts_val = self.mcts.search(nnr_input)
             # Store the MCTS root value estimate for n-step bootstrap targets.
             # These replace pure Monte-Carlo returns in _train_networks, cutting
             # value-target variance from ~200-step horizon to n_step horizon.
@@ -151,6 +158,7 @@ class ReinforcementLearningManager:
             "layer_weights": self.nnm.get_layer_weights(),
             "mcts_cfg":     dict(config.mcts),
             "max_steps":    500,
+            "q":            config.nn.get("q", 0),
         }
         futures = [pool.submit(collect_episode_worker, args) for _ in range(n)]
         return [f.result() for f in futures]
@@ -265,6 +273,7 @@ class ReinforcementLearningManager:
         action_to_idx = {a: i for i, a in enumerate(action_order)}
         roll_ahead    = config.training["roll_ahead"]
         gamma         = config.training.get("gamma", 1.0)
+        q             = config.nn.get("q", 0)
 
         # Normalize reward/value targets by a game-specific scale so that loss
         # magnitudes stay comparable regardless of reward range (e.g. 2048
@@ -302,8 +311,9 @@ class ReinforcementLearningManager:
                     total = sum(pt.values()) or 1
                     p_arrays.append([pt.get(a, 0.0) / total for a in action_order])
 
+                nnr_input = ASM.build_state_window(states[max(0, k - q): k + 1], q)
                 minibatches.append({
-                    'state':          np.array(states[k], dtype=np.float32).flatten(),
+                    'state':          nnr_input,
                     'action_indices': [action_to_idx[a] for a in actions[k : k + roll_ahead]],
                     'value_targets': [mc_returns[k + j] for j in range(roll_ahead)],
                     'policy_targets': p_arrays,
@@ -349,12 +359,16 @@ class ReinforcementLearningManager:
         all_values    = []
         all_max_tiles = []
 
+        q = config.nn.get("q", 0)
         for _ in range(num_games):
             state = self.gsm.initial_state()
+            state_history = []
             steps = 0
             while not self.gsm.is_terminal(state) and steps < 500:
+                state_history.append(state)
+                nnr_input = ASM.build_state_window(state_history, q)
                 sigma  = _net_fwd(nn_r, jnp.atleast_2d(
-                    jnp.array(state, dtype=jnp.float32)
+                    jnp.array(nnr_input, dtype=jnp.float32)
                 ))
                 output = _net_fwd(nn_p, sigma)[0]
 
@@ -410,6 +424,7 @@ class ReinforcementLearningManager:
                               if k in ("nnr", "nnp")},
             "num_games":    num_games,
             "max_steps":    500,
+            "q":            config.nn.get("q", 0),
         }
 
         if use_parallel:
@@ -461,12 +476,16 @@ class ReinforcementLearningManager:
         """
         label = getattr(self.gsm, "score_label", "Score")
         print(f"\n  Evaluating MCTS ({num_games} games)...")
+        q = config.nn.get("q", 0)
         wins, scores = 0, []
         for _ in range(num_games):
             state = self.gsm.initial_state()
+            state_history = []
             steps = 0
             while not self.gsm.is_terminal(state) and steps < 300:
-                action, _, _ = self.mcts.search(state)
+                state_history.append(state)
+                nnr_input = ASM.build_state_window(state_history, q)
+                action, _, _ = self.mcts.search(nnr_input)
                 state = self.gsm.next_state(state, action)
                 steps += 1
             if self.gsm.is_win(state):

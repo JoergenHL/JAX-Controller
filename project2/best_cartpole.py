@@ -26,6 +26,7 @@ import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
 
 from nn.NNManager import NNManager
+from game.ASM import ASM
 import config
 
 _net_fwd = nnx.jit(lambda model, x: model(x))
@@ -60,10 +61,12 @@ def load_model(pkl_path: str):
     return nnm, run_data
 
 
-def run_episodes(nnm: NNManager, num_episodes: int, video_dir: str) -> list[dict]:
+def run_episodes(nnm: NNManager, run_data: dict, num_episodes: int,
+                 video_dir: str) -> list[dict]:
     """Run num_episodes with recording. Returns list of {episode, steps, video_path}."""
     nn_r = nnm.get_net("nnr")
     nn_p = nnm.get_net("nnp")
+    q    = run_data.get("config", {}).get("nn", {}).get("q", 0)
 
     env = gym.make("CartPole-v1", render_mode="rgb_array")
     env = RecordVideo(
@@ -78,9 +81,12 @@ def run_episodes(nnm: NNManager, num_episodes: int, video_dir: str) -> list[dict
         obs, _ = env.reset()
         steps  = 0
         done   = False
+        state_history = []
 
         while not done and steps < 500:
-            sigma  = _net_fwd(nn_r, jnp.atleast_2d(jnp.array(obs, dtype=jnp.float32)))
+            state_history.append(np.array(obs, dtype=np.float32))
+            nnr_input = ASM.build_state_window(state_history, q)
+            sigma  = _net_fwd(nn_r, jnp.atleast_2d(jnp.array(nnr_input, dtype=jnp.float32)))
             output = _net_fwd(nn_p, sigma)[0]
             action = int(np.argmax(np.array(output[1:])))
             obs, _, terminated, truncated, _ = env.step(action)
@@ -135,7 +141,7 @@ def main():
     print(f"Running {num_episodes} episodes, saving best to: {output_path}\n")
 
     with tempfile.TemporaryDirectory() as video_dir:
-        results = run_episodes(nnm, num_episodes, video_dir)
+        results = run_episodes(nnm, run_data, num_episodes, video_dir)
         best = save_best(results, output_path)
 
     scores = [r["steps"] for r in results]

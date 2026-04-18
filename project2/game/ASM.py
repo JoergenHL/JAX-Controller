@@ -1,3 +1,4 @@
+import numpy as np
 import jax.numpy as jnp
 
 
@@ -13,6 +14,34 @@ class ASM:
     This class holds no network weights itself — it receives the networks as
     arguments so the NNManager remains the single owner of all parameters.
     """
+
+    @staticmethod
+    def build_state_window(history: list, q: int) -> np.ndarray:
+        """Concatenate the last q+1 real states into a flat NNr input vector.
+
+        Args:
+            history: list of raw states in chronological order, at least length 1.
+                     The last element is the current state.
+            q:       look-back count (config.nn["q"]).
+                     q=0 returns the current state unchanged (original behaviour).
+
+        Returns:
+            1-D float32 numpy array of shape (state_dim * (q+1),).
+
+        Padding: when fewer than q+1 states are available (start of episode),
+        the earliest available state (history[0]) is repeated on the left.
+        This keeps the input in the same distribution as normal states and
+        avoids a spurious all-zeros signal at episode start.
+        """
+        needed = q + 1
+        if len(history) >= needed:
+            window = history[-needed:]
+        else:
+            pad = needed - len(history)
+            window = [history[0]] * pad + list(history)
+        return np.concatenate(
+            [np.asarray(s, dtype=np.float32).flatten() for s in window]
+        )
 
     def map_abstract_state(self, state, nn_r):
         """Map a real game state to an abstract state vector via NNr.
