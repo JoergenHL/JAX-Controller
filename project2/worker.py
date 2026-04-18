@@ -12,7 +12,6 @@ Workers use 'spawn' start method, meaning each process imports Python from
 scratch and initialises its own JAX instance — no shared mutable state.
 """
 
-import random
 import numpy as np
 
 
@@ -88,6 +87,13 @@ def collect_episode_worker(args: dict) -> dict:
 
     # ── Episode loop (mirrors rlm.collect_episode) ─────────────────────────────
     from game.ASM import ASM
+    from rlm import compute_sampling_tau, temperature_sample
+    tau = compute_sampling_tau(
+        args.get("iteration", 0),
+        args.get("total_iterations", 1),
+        args.get("sampling_temp_cfg", {}),
+    )
+
     states, actions, rewards, policies, mcts_values = [], [], [], [], []
     state     = game.initial_state()
     max_steps = args["max_steps"]
@@ -104,19 +110,14 @@ def collect_episode_worker(args: dict) -> dict:
         _, policy, mcts_val = mcts.search(nnr_input)
         mcts_values.append(float(mcts_val))
 
-        # Sample action from visit-count distribution (AlphaZero convention).
+        # Sample action from visit-count distribution under temperature τ.
         # Restrict to legal actions so the agent never wastes a step on a move
         # that doesn't change the board (e.g. UP when the board is packed).
         legal = set(game.legal_actions(state))
         legal_policy = {a: v for a, v in policy.items() if a in legal}
         if not legal_policy:
             legal_policy = policy   # fallback: shouldn't happen (is_terminal guard above)
-        total  = sum(legal_policy.values()) or 1
-        action = random.choices(
-            list(legal_policy.keys()),
-            weights=[legal_policy[a] / total for a in legal_policy],
-            k=1,
-        )[0]
+        action = temperature_sample(legal_policy, tau)
 
         actions.append(action)
         policies.append(policy)

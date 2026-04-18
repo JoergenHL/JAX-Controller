@@ -34,7 +34,10 @@ class NNManager:
     
     def train_bptt(self, minibatches, abstract_dim, num_actions,
                    num_updates: int = 500, minibatch_size: int = 128,
-                   learning_rate: float = 0.01):
+                   learning_rate: float = 0.01,
+                   total_updates: int = None,
+                   lr_schedule: str = "constant",
+                   lr_floor_frac: float = 0.1):
         """MuZero-style minibatched BPTT through NNr → NNd^w → NNp.
 
         Each gradient step samples `minibatch_size` random (episode, step)
@@ -127,8 +130,26 @@ class NNManager:
 
         # Persistent Adam across train_bptt calls (see __init__). Lazy init on
         # first call — at that point the network params exist and shapes are known.
+        # LR schedule: cosine decay to `learning_rate * lr_floor_frac` over the
+        # full training run (total_updates gradient steps). Step count persists
+        # inside opt_state, so the schedule advances naturally across iterations
+        # without resets.
         if self.optimizer is None:
-            self.optimizer = optax.adam(learning_rate)
+            if lr_schedule == "cosine" and total_updates and total_updates > 0:
+                schedule = optax.cosine_decay_schedule(
+                    init_value=learning_rate,
+                    decay_steps=total_updates,
+                    alpha=lr_floor_frac,
+                )
+                self.optimizer = optax.adam(schedule)
+                print(f"  LR schedule: cosine {learning_rate:g} → "
+                      f"{learning_rate * lr_floor_frac:g} "
+                      f"over {total_updates} updates")
+            else:
+                self.optimizer = optax.adam(learning_rate)
+                if lr_schedule != "constant":
+                    print(f"  LR schedule: constant {learning_rate:g} "
+                          f"(no total_updates supplied)")
             self.opt_state["nnr"] = self.optimizer.init(params_r)
             self.opt_state["nnd"] = self.optimizer.init(params_d)
             self.opt_state["nnp"] = self.optimizer.init(params_p)
