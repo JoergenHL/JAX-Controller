@@ -71,23 +71,19 @@ class TwentyFortyEight:
         return self._spawn_tile(new_state)
 
     def reward(self, state, action, next_state):
-        """Reward = log₂(total merge score) for this move.
+        """Reward = log₂(largest tile produced by merging this move).
 
-        Every merge contributes to the score: two tiles of value v merging into
-        2v add 2v to the merge score. Taking log₂ normalises across the
-        exponentially growing tile values:
-            2+2→4:   merge_score=4,    reward=2
-            8+8→16:  merge_score=16,   reward=4
-            64+64→128: merge_score=128, reward=7
+        Only the best merge per move is credited, preventing small early merges
+        from dominating the cumulative return:
+            2+2→4:       max_merged_log2=2,  reward=2
+            64+64→128:   max_merged_log2=7,  reward=7
+            512+512→1024: max_merged_log2=10, reward=10
 
-        Dense reward (fires on every merge, ~100–200 times per game) vs. the
-        previous max-tile-only reward (~8–10 times per game), giving the agent
-        a clear, graded signal for making good vs. wasted moves.
+        Max reward per step is log₂(4096)=12, keeping MC returns bounded
+        regardless of episode length and preventing value-head divergence.
         """
-        _, _, merge_score = self._apply_move(state, action)
-        if merge_score == 0:
-            return 0.0
-        return merge_score
+        _, max_merged_log2, _ = self._apply_move(state, action)
+        return float(max_merged_log2)
 
     def is_terminal(self, state):
         """No valid moves remain: board is full and no adjacent equal tiles."""
