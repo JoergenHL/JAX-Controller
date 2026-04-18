@@ -359,7 +359,8 @@ class ReinforcementLearningManager:
     def train(self, num_iterations=None, episodes_per_iter=None,
               updates_per_iter=None, minibatch_size=None,
               run_prefix: str = None, network_dims: dict = None,
-              game_name: str = None):
+              game_name: str = None,
+              total_updates_override: int = None):
         """Self-play training loop.
 
         Each iteration:
@@ -379,7 +380,11 @@ class ReinforcementLearningManager:
         # Total gradient steps across the entire run — drives the cosine LR
         # schedule inside NNManager. Computed once; same value passed every call
         # since optax's schedule tracks its own step count in opt_state.
-        total_updates = num_iterations * updates_per_iter
+        # total_updates_override lets callers span the schedule across multiple
+        # train() invocations on the same NNManager (hparam_optuna's pre-run +
+        # phase-2 split relies on this — without it, pre-run would exhaust the
+        # cosine schedule in 10 iters and phase 2 would inherit a floored LR).
+        total_updates = total_updates_override or (num_iterations * updates_per_iter)
 
         num_workers = config.training.get("num_workers", 1)
         use_parallel = num_workers > 1

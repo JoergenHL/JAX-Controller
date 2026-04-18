@@ -34,9 +34,12 @@ OUTPUTS (all under runs/optuna_<ts>/)
 RUN
     ./run_overnight.sh                  # creates conda env + launches this
 
-Pruning: a trial that averages < PRUNE_THRESHOLD on a short pre-run is
-cancelled before committing to the full budget. Pre-run uses run_prefix=None
-so nothing is written to disk for a trial that turns out to be unpromising.
+Pruning: a trial whose last PRUNE_TAIL pre-run evals average below
+PRUNE_THRESHOLD is cancelled before committing to the full budget. The tail
+mean (not the whole pre-run mean) is used because the first few iters are
+pure exploration noise — averaging them in would penalise trials that are
+climbing on-trajectory. Pre-run uses run_prefix=None so nothing is written
+to disk for a trial that turns out to be unpromising.
 """
 
 import csv
@@ -60,7 +63,10 @@ NUM_WORKERS     = 3
 # Budget per trial
 FULL_ITERS            = 100  # total iters if trial survives the prune gate
 PRUNE_AT              = 10   # eval avg checked at this iteration
-PRUNE_THRESHOLD       = 30.0 # prune if pre-run avg across first PRUNE_AT iters < this
+PRUNE_THRESHOLD       = 20.0 # prune if mean of last PRUNE_TAIL pre-run evals < this
+PRUNE_TAIL            = 3    # only the last-N iters inform the prune decision (tail
+                             # is a stronger signal than the full mean — early iters
+                             # are pure exploration noise on CartPole)
 CHECKPOINT_EVERY      = 5    # save checkpoint pkl every N iters (post-prune only)
 LEADERBOARD_K         = 3    # top-K during training
 LEADERBOARD_THRESHOLD = 40.0 # min eval avg to enter leaderboard
@@ -300,12 +306,23 @@ def run_trial(trial_num: int, params: dict,
                        num_iterations=PRUNE_AT)
     _, nnm, rlm, network_dims = build_rlm()
 
+    # Span the cosine LR schedule over the *full* budget (pre-run + phase 2),
+    # not just the pre-run's 10 iters. Without this the LR would decay to the
+    # floor during pre-run and phase 2 would inherit a dead optimizer.
+    full_total_updates = FULL_ITERS * UPDATES
+
     t0 = time.time()
-    result_pre = rlm.train()   # run_prefix=None → nothing hits disk
+    result_pre = rlm.train(total_updates_override=full_total_updates)   # run_prefix=None → nothing hits disk
     pre_evals  = result_pre.get("eval_scores", [])
     pre_avg    = (sum(e[2] for e in pre_evals) / len(pre_evals)) if pre_evals else 0.0
+    # Prune decision uses the *tail* of the pre-run: the last PRUNE_TAIL evals.
+    # Averaging across all 10 iters drags the signal down with early exploration
+    # noise — a trial that climbs from 10 → 40 reads as avg 25 and gets cut
+    # despite being on-trajectory. The tail sees where the trial is heading.
+    tail         = pre_evals[-PRUNE_TAIL:] if pre_evals else []
+    prune_signal = (sum(e[2] for e in tail) / len(tail)) if tail else 0.0
 
-    pruned = pre_avg < PRUNE_THRESHOLD
+    pruned = prune_signal < PRUNE_THRESHOLD
 
     if pruned:
         result       = result_pre
@@ -326,9 +343,10 @@ def run_trial(trial_num: int, params: dict,
         config.viz["final_eval_games"]        = FINAL_EVAL_PER_TRIAL
 
         result_post = rlm.train(
-            run_prefix   = trial_prefix,
-            network_dims = network_dims,
-            game_name    = GAME,
+            run_prefix             = trial_prefix,
+            network_dims           = network_dims,
+            game_name              = GAME,
+            total_updates_override = full_total_updates,  # same schedule span as pre-run
         )
 
         result = {
@@ -441,7 +459,8 @@ def main():
     print("OVERNIGHT TRAINING — Optuna TPE harness")
     print(f"  Run dir: {RUN_DIR}")
     print(f"  Trials:  {N_TRIALS}  |  Budget: {FULL_ITERS} iters each"
-          f"  |  Prune at iter {PRUNE_AT} if avg < {PRUNE_THRESHOLD}")
+          f"  |  Prune if mean of last {PRUNE_TAIL} pre-run evals < {PRUNE_THRESHOLD} "
+          f"(check at iter {PRUNE_AT})")
     print(f"  Seeding: {len(PRIOR_TRIALS)} prior trials")
     print("  Search space:")
     for name, dist in DISTRIBUTIONS.items():
