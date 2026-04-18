@@ -20,10 +20,10 @@ game = {
 
 mcts = {
     "num_simulations": 50,   # Simulations per move
-    "c": 0.3,                  # Exploration constant in PUCT formula
-    "d_max": 12,              # Rollout depth: NNd steps from the randomly-picked child Nc
+    "c": 0.4,                  # Exploration constant in PUCT formula
+    "d_max": 2,              # Rollout depth: NNd steps from the randomly-picked child Nc
     "dir_alpha":   0.3,      # Dirichlet concentration for root exploration noise
-    "dir_epsilon": 0.35,     # Weight of noise vs network policy at root
+    "dir_epsilon": 0.23,     # Weight of noise vs network policy at root
 }
 
 nn = {
@@ -54,7 +54,7 @@ nn = {
 
 training = {
     "num_iterations":    5,
-    "episodes_per_iter": 7,
+    "episodes_per_iter": 9,
     # MuZero-style minibatching: many small random-sample gradient steps per
     # iteration instead of full-batch epoch passes. Each update samples
     # `minibatch_size` random (episode, step) windows from the buffer.
@@ -112,15 +112,15 @@ viz = {
     # Interval snapshotting for video progression — pkl + companion JSON saved
     # every N iterations so we can later play the agent at different points in
     # training. 0 disables entirely (hparam searches should keep it off).
-    "checkpoint_every": 0,
+    "checkpoint_every": 10,
 
     # Top-K "best model" leaderboard. After each iteration's eval, if the
     # eval avg exceeds best_threshold AND beats the worst entry, the model
     # enters the leaderboard. After training, every entry is re-evaluated on
     # final_eval_games games for an authoritative ranking; the winner becomes
     # <prefix>_champion.pkl. Set best_leaderboard_k=0 to disable.
-    "best_leaderboard_k": 0,
-    "best_threshold":     10,    # min eval avg required to enter leaderboard
+    "best_leaderboard_k": 5,
+    "best_threshold":     50,    # min eval avg required to enter leaderboard
     "final_eval_games":   1000,  # games per candidate in the post-training shootout
 
     # replay_after_training: render one greedy game to stdout after training.

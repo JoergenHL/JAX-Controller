@@ -1,0 +1,21 @@
+name: AI
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - packaging     # optuna imports it but doesn't list it as a dep; install via conda to avoid pip RECORD conflicts
+  - ffmpeg        # required by moviepy (runs RecordVideo + progression video)
+  - pip:
+      - jax
+      - flax
+      - optax
+      - optuna
+      - gymnasium[classic-control]
+      - moviepy
+      - imageio
+      - pillow
+      - networkx
+      - scikit-learn
+      - matplotlib
+      - numpy
