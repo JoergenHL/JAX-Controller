@@ -1,0 +1,149 @@
+{
+  "timestamp": "2026-04-19T19:41:54",
+  "game": "TwentyFortyEight",
+  "reward_scale": 32.0,
+  "kind": "champion",
+  "iteration": 10,
+  "eval_avg": 202.24,
+  "eval_scores": [
+    512,
+    128,
+    64,
+    64,
+    128,
+    256,
+    128,
+    128,
+    256,
+    128,
+    128,
+    64,
+    256,
+    128,
+    512,
+    256,
+    128,
+    512,
+    512,
+    256,
+    256,
+    256,
+    128,
+    64,
+    128,
+    128,
+    128,
+    128,
+    256,
+    256,
+    512,
+    128,
+    64,
+    256,
+    64,
+    256,
+    256,
+    128,
+    256,
+    512,
+    256,
+    128,
+    256,
+    128,
+    128,
+    64,
+    128,
+    128,
+    64,
+    128
+  ],
+  "config": {
+    "mcts": {
+      "num_simulations": 50,
+      "c": 0.4,
+      "d_max": 2,
+      "dir_alpha": 0.3,
+      "dir_epsilon": 0.23
+    },
+    "nn": {
+      "abstract_dim": 32,
+      "q": 2,
+      "nnr_hidden": [
+        128,
+        128
+      ],
+      "nnp_hidden": [
+        128,
+        128
+      ],
+      "nnd_hidden": [
+        128,
+        128
+      ],
+      "learning_rate": 0.001,
+      "lr_schedule": "cosine",
+      "lr_floor_frac": 0.1,
+      "loss_weights": {
+        "value": 0.25,
+        "policy": 1.0,
+        "reward": 1.0
+      }
+    },
+    "training": {
+      "num_iterations": 10,
+      "episodes_per_iter": 9,
+      "updates_per_iter": 50,
+      "minibatch_size": 64,
+      "roll_ahead": 3,
+      "buffer_history_iters": 100,
+      "n_step": 10,
+      "gamma": 0.99,
+      "sampling_temp": {
+        "start": 1.0,
+        "end": 0.2,
+        "transition_at": 0.5
+      },
+      "num_workers": 3
+    },
+    "viz": {
+      "eval_every": 1,
+      "eval_games": 50,
+      "checkpoint_every": 20,
+      "best_leaderboard_k": 5,
+      "best_threshold": 50,
+      "final_eval_games": 1000,
+      "replay_after_training": false,
+      "replay_max_steps": 500,
+      "compare_baseline": true,
+      "baseline_games": 100,
+      "compare_mcts": false,
+      "mcts_eval_games": 10,
+      "show_policy_analysis": true,
+      "policy_analysis_games": 100
+    }
+  },
+  "network_dims": {
+    "nnr": [
+      48,
+      128,
+      128,
+      32
+    ],
+    "nnp": [
+      32,
+      128,
+      128,
+      5
+    ],
+    "nnd": [
+      36,
+      128,
+      128,
+      33
+    ]
+  },
+  "iterations": [],
+  "rank": 2,
+  "final_eval_avg": 195.3,
+  "final_eval_games": 1000
+}

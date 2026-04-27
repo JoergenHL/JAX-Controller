@@ -23,12 +23,8 @@ def _get_game(name: str):
     global _GAME_REGISTRY
     if _GAME_REGISTRY is None:
         from game.TwentyFortyEight import TwentyFortyEight
-        from game.LineWorld import LineWorld
-        from game.CartPole import CartPole
         _GAME_REGISTRY = {
             "TwentyFortyEight": TwentyFortyEight,
-            "LineWorld":        LineWorld,
-            "CartPole":         CartPole,
         }
     if name not in _GAME_REGISTRY:
         raise ValueError(

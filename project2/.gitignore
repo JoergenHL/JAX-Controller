@@ -1,0 +1,12 @@
+*.pyc
+__pycache__/
+.DS_Store
+CLAUDE.md
+
+# Untracked training output — fresh runs land here, get ignored
+runs/optuna_*/
+runs/*hparam_search*
+runs/*_best[1-9].pkl
+runs/*_best[1-9].json
+runs/*_ckpt_iter*.pkl
+runs/*_ckpt_iter*.json

@@ -1,0 +1,46 @@
+{
+  "run_prefix": "runs/CartPole_2026-04-18_16-10-31",
+  "final_eval_games": 1000,
+  "ranking": [
+    {
+      "iteration": 1,
+      "selection_eval_avg": 38.76,
+      "final_eval_avg": 39.03,
+      "final_eval_games": 1000,
+      "pkl_path": "runs/CartPole_2026-04-18_16-10-31_best1.pkl",
+      "rank": 1
+    },
+    {
+      "iteration": 4,
+      "selection_eval_avg": 34.62,
+      "final_eval_avg": 33.94,
+      "final_eval_games": 1000,
+      "pkl_path": "runs/CartPole_2026-04-18_16-10-31_best2.pkl",
+      "rank": 2
+    },
+    {
+      "iteration": 3,
+      "selection_eval_avg": 26.06,
+      "final_eval_avg": 25.17,
+      "final_eval_games": 1000,
+      "pkl_path": "runs/CartPole_2026-04-18_16-10-31_best3.pkl",
+      "rank": 3
+    },
+    {
+      "iteration": 5,
+      "selection_eval_avg": 21.9,
+      "final_eval_avg": 24.33,
+      "final_eval_games": 1000,
+      "pkl_path": "runs/CartPole_2026-04-18_16-10-31_best4.pkl",
+      "rank": 4
+    },
+    {
+      "iteration": 2,
+      "selection_eval_avg": 21.28,
+      "final_eval_avg": 22.35,
+      "final_eval_games": 1000,
+      "pkl_path": "runs/CartPole_2026-04-18_16-10-31_best5.pkl",
+      "rank": 5
+    }
+  ]
+}

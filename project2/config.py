@@ -13,9 +13,9 @@
 
 # ── Game selection ─────────────────────────────────────────────────────────────
 # name: class name string — must match an entry in worker.py's _GAME_REGISTRY.
-# Available: "TwentyFortyEight", "CartPole", "LineWorld"
+# Available: "TwentyFortyEight"
 game = {
-    "name": "CartPole",
+    "name": "TwentyFortyEight",
 }
 
 mcts = {
@@ -36,9 +36,9 @@ nn = {
     #   q=2: three consecutive states — gives NNr access to velocity and acceleration.
     "abstract_dim": 32,
     "q":            2,
-    "nnr_hidden":   [128, 128, 128],
-    "nnp_hidden":   [128, 128, 128],
-    "nnd_hidden":   [128, 128, 128],    
+    "nnr_hidden":   [128, 128],
+    "nnp_hidden":   [128, 128],
+    "nnd_hidden":   [128, 128],    
     "learning_rate": 0.001,
     # LR schedule across all gradient steps of a training run.
     #   "constant": flat `learning_rate` for the entire run (original behaviour).
@@ -53,7 +53,7 @@ nn = {
 }
 
 training = {
-    "num_iterations":    5,
+    "num_iterations":    10,
     "episodes_per_iter": 9,
     # MuZero-style minibatching: many small random-sample gradient steps per
     # iteration instead of full-batch epoch passes. Each update samples
@@ -112,7 +112,7 @@ viz = {
     # Interval snapshotting for video progression — pkl + companion JSON saved
     # every N iterations so we can later play the agent at different points in
     # training. 0 disables entirely (hparam searches should keep it off).
-    "checkpoint_every": 10,
+    "checkpoint_every": 20,
 
     # Top-K "best model" leaderboard. After each iteration's eval, if the
     # eval avg exceeds best_threshold AND beats the worst entry, the model
@@ -126,7 +126,7 @@ viz = {
     # replay_after_training: render one greedy game to stdout after training.
     # Set False to suppress output when running unattended.
     "replay_after_training": False,
-    "replay_max_steps":      50,
+    "replay_max_steps":      500,
 
     # compare_baseline: run a random agent after training and overlay its scores
     # on the eval-scores plot. Fast (no network calls) — ~1-2 seconds for 20 games.

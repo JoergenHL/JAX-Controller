@@ -61,30 +61,35 @@ GAMMA           = 0.99
 NUM_WORKERS     = 3
 
 # Budget per trial
-FULL_ITERS            = 100  # total iters if trial survives the prune gate
-PRUNE_AT              = 10   # eval avg checked at this iteration
+FULL_ITERS            = 25   # total iters if trial survives the prune gate
+PRUNE_AT              = 8    # eval avg checked at this iteration (~32% of budget)
 PRUNE_THRESHOLD       = 20.0 # prune if mean of last PRUNE_TAIL pre-run evals < this
 PRUNE_TAIL            = 3    # only the last-N iters inform the prune decision (tail
                              # is a stronger signal than the full mean — early iters
                              # are pure exploration noise on CartPole)
 CHECKPOINT_EVERY      = 5    # save checkpoint pkl every N iters (post-prune only)
 LEADERBOARD_K         = 3    # top-K during training
-LEADERBOARD_THRESHOLD = 40.0 # min eval avg to enter leaderboard
+LEADERBOARD_THRESHOLD = 25.0 # min eval avg to enter leaderboard (lowered for 25-iter
+                             # budget — agents rarely cross 40 that fast)
 EVAL_GAMES            = 10   # per-iter eval games (fast; noisy signal for leaderboard)
 FINAL_EVAL_PER_TRIAL  = 200  # games used in the per-trial champion shootout
 
-# Total trials. At 100 iters an unpruned trial takes ~3–4 hours (late-training
-# episodes hit the 500-step cap, so per-iter cost grows with agent skill).
-# Pruning saves ~80% of a pruned trial. With ~40% prune rate, 6 trials lands
-# around 14–16h — on the long end for overnight. Drop N_TRIALS to 4 if you
-# want to be confident it finishes by morning.
-N_TRIALS       = 6
+# Total trials. Budget notes (CartPole, 3 workers, Apr 19 overnight timings):
+#   25 iters unpruned → ~60 min per trial (~2.4 min/iter)
+#   pruned at iter 8  → ~20 min per trial
+# At ~40% prune rate, 15 trials lands around 9–10h. Drop to 10 for a shorter
+# window (~6–7h) or raise to 20 for an overnight (~12–13h).
+N_TRIALS       = 15
 
 
 # ── Output directory ───────────────────────────────────────────────────────────
+# NB: RUN_DIR is computed at import time but the directory itself is only
+# created inside main() — a module import that crashes before main() runs
+# (e.g. optuna missing, config typo) shouldn't leave an empty optuna_<ts>/ dir
+# cluttering runs/. meta_shootout.py globs optuna_*/ directories and would
+# otherwise pick up empty ones as candidate runs.
 RUN_TS     = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 RUN_DIR    = os.path.join("runs", f"optuna_{RUN_TS}")
-os.makedirs(RUN_DIR, exist_ok=True)
 
 CSV_PATH   = os.path.join(RUN_DIR, "trials.csv")
 FIELDS     = [
@@ -99,37 +104,22 @@ FIELDS     = [
 
 # ── Prior results (seed TPE with known observations) ──────────────────────────
 # Format: (lr, c, d_max, num_sims, eps_per_iter, abstract_dim, width, dir_epsilon, agent_avg)
-# Recorded at 2 hidden layers, which is what this harness keeps using.
+#
+# All priors must be measured at the SAME budget TPE now sees (FULL_ITERS), or
+# TPE will model a score distribution that this harness can't reproduce and
+# waste its early trials chasing phantom optima. Older priors from the 100-iter
+# overnight and earlier exploratory rounds have been dropped for that reason.
+#
+# Below: last night's 5 completed trials (optuna_2026-04-18_23-25-07), scored
+# by mean of iters 23-25 of their iter_avgs — i.e. what each config would have
+# reported if the run had stopped at FULL_ITERS=25. Trial 3 was pruned before
+# iter 25 and is omitted.
 PRIOR_TRIALS = [
-    # ── Round 1: lr × d_max × sims (10 iters, 9 eps, c=2.0) ──────────────────
-    (0.001,  2.0,  5, 30,  9, 32, 128, 0.25, 16.95),
-    (0.001,  2.0,  5, 50,  9, 32, 128, 0.25, 15.35),
-    (0.001,  2.0, 10, 30,  9, 32, 128, 0.25, 22.90),
-    (0.001,  2.0, 10, 50,  9, 32, 128, 0.25, 16.00),
-    (0.0003, 2.0,  5, 30,  9, 32, 128, 0.25, 16.95),
-    (0.0003, 2.0,  5, 50,  9, 32, 128, 0.25,  9.80),
-    (0.0003, 2.0, 10, 30,  9, 32, 128, 0.25, 10.75),
-    (0.0003, 2.0, 10, 50,  9, 32, 128, 0.25, 24.40),
-    (0.0001, 2.0,  5, 30,  9, 32, 128, 0.25,  9.35),
-    (0.0001, 2.0,  5, 50,  9, 32, 128, 0.25,  9.35),
-    (0.0001, 2.0, 10, 30,  9, 32, 128, 0.25, 11.10),
-    (0.0001, 2.0, 10, 50,  9, 32, 128, 0.25, 25.80),
-    # ── Round 2: lr sweep + eps (25/20 iters) ────────────────────────────────
-    (0.001,  2.0, 10, 50,  9, 32, 128, 0.25, 59.25),
-    (0.0003, 2.0, 10, 50,  9, 32, 128, 0.25, 46.25),
-    (0.0001, 2.0, 10, 50,  9, 32, 128, 0.25,  9.45),
-    (0.001,  2.0, 10, 50, 18, 32, 128, 0.25, 15.45),
-    (0.0001, 2.0, 10, 50, 18, 32, 128, 0.25,  9.35),
-    # ── c search ─────────────────────────────────────────────────────────────
-    (0.001,  0.5, 10, 50,  9, 32, 128, 0.25, 31.75),
-    (0.001,  1.0, 10, 50,  9, 32, 128, 0.25, 18.60),
-    (0.001,  2.0, 10, 50,  9, 32, 128, 0.25, 17.15),
-    (0.001,  4.0, 10, 50,  9, 32, 128, 0.25, 35.20),
-    (0.001,  8.0, 10, 50,  9, 32, 128, 0.25, 19.85),
-    # ── Narrowed round (Apr 18): lr/c/dim/width/dir_eps ──────────────────────
-    (0.000808, 0.42, 11, 50,  9, 32, 128, 0.228, 113.95),   # Trial 24 — current best
-    (0.00119,  0.31, 12, 50,  7, 32, 128, 0.347, 33.65),
-    (0.00157,  0.49,  9, 50,  8, 32, 128, 0.211, 29.25),
+    (0.0006682, 0.6596, 11, 50,  8, 32, 128, 0.165, 17.67),   # Apr19 trial 1
+    (0.0007812, 0.4086, 11, 50, 10, 32, 128, 0.229, 24.37),   # Apr19 trial 2
+    (0.0011802, 0.4282, 13, 50, 10, 32, 128, 0.274, 27.50),   # Apr19 trial 4 (eventual overnight winner)
+    (0.0012363, 0.4211, 13, 50, 10, 32, 128, 0.281, 19.53),   # Apr19 trial 5
+    (0.0013489, 0.4242, 12, 50, 10, 32, 128, 0.275, 37.63),   # Apr19 trial 6 (best at 25 iters)
 ]
 
 
@@ -455,6 +445,7 @@ def run_trial(trial_num: int, params: dict,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    os.makedirs(RUN_DIR, exist_ok=True)
     print("=" * 76)
     print("OVERNIGHT TRAINING — Optuna TPE harness")
     print(f"  Run dir: {RUN_DIR}")
