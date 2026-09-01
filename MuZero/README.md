@@ -106,6 +106,13 @@ Settings were tuned with **Bayesian search** via [Optuna](https://optuna.org)'s 
 ./run_overnight.sh   # full pipeline: env → Optuna trials → 1000-game shootout
 ```
 
+## Contributors
+
+[Jørgen Hauan Larsen](https://github.com/JoergenHL)
+[Liam Robert Shepard](https://github.com/lsshepard)
+[Torstein Hauge Fossnes](https://github.com/torsteinhf)
+
+
 ## References
 
 - DeepMind's MuZero paper: [arXiv:1911.08265](https://arxiv.org/abs/1911.08265)
